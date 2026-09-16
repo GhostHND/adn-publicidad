@@ -1,0 +1,767 @@
+:root {
+    --adn-turquoise: #0fa7b4;
+    --adn-turquoise-light: #22c6d2;
+    --adn-turquoise-dark: #087f89;
+
+    --adn-coral: #e84657;
+    --adn-coral-light: #f06472;
+    --adn-coral-dark: #c93444;
+
+    --adn-black: #1d1d1b;
+    --adn-night: #05090b;
+    --adn-night-soft: #071014;
+    --adn-panel: #0a1317;
+}
+
+/*
+|--------------------------------------------------------------------------
+| BASE
+|--------------------------------------------------------------------------
+*/
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    overflow-x: hidden;
+    background: #05090b;
+}
+
+::selection {
+    background:
+        rgba(
+            15,
+            167,
+            180,
+            0.3
+        );
+
+    color:
+        white;
+}
+
+/*
+|--------------------------------------------------------------------------
+| CONTENIDO ADMINISTRATIVO
+|--------------------------------------------------------------------------
+*/
+
+[data-slot="sidebar-inset"] {
+    width: auto !important;
+    min-width: 0 !important;
+    flex: 1 1 0% !important;
+
+    background:
+        radial-gradient(
+            circle at 88% 0%,
+            rgba(
+                15,
+                167,
+                180,
+                0.05
+            ),
+            transparent 32rem
+        ),
+        #070b0d !important;
+}
+
+/*
+Elimina el espacio artificial creado por
+max-w-* + mx-auto en las páginas antiguas.
+Solo se aplica al contenedor RAÍZ de cada módulo.
+*/
+
+.adn-page-host {
+    width: 100%;
+    min-width: 0;
+}
+
+.adn-page-host
+> .mx-auto {
+    width: 100% !important;
+
+    max-width: none !important;
+
+    margin-left: 0 !important;
+
+    margin-right: 0 !important;
+}
+
+.adn-page-host
+> div {
+    min-width: 0;
+}
+
+/*
+|--------------------------------------------------------------------------
+| SIDEBAR
+|--------------------------------------------------------------------------
+*/
+
+[data-sidebar="sidebar"] {
+    isolation: isolate;
+
+    background:
+        #061115 !important;
+
+    border-right:
+        1px solid
+        rgba(
+            15,
+            167,
+            180,
+            0.14
+        ) !important;
+
+    box-shadow:
+        8px 0 32px
+        rgba(
+            0,
+            0,
+            0,
+            0.18
+        );
+
+    overflow: hidden;
+}
+
+[data-sidebar="header"],
+[data-sidebar="content"],
+[data-sidebar="footer"] {
+    background:
+        #061115 !important;
+}
+
+/*
+No hay transparencias en la navegación.
+Así desaparece el "ghosting".
+*/
+
+[data-sidebar="content"] {
+    isolation: isolate;
+}
+
+[data-sidebar="menu-button"] {
+    overflow: visible;
+
+    border:
+        1px solid
+        transparent;
+
+    transition:
+        background 180ms ease,
+        color 180ms ease,
+        border-color 180ms ease,
+        box-shadow 180ms ease,
+        transform 180ms ease !important;
+}
+
+[data-sidebar="menu-button"]:hover {
+    color:
+        white !important;
+
+    border-color:
+        rgba(
+            15,
+            167,
+            180,
+            0.12
+        );
+
+    background:
+        rgba(
+            15,
+            167,
+            180,
+            0.075
+        ) !important;
+}
+
+[data-sidebar="menu-button"][data-active="true"] {
+    color:
+        white !important;
+
+    border-color:
+        rgba(
+            50,
+            222,
+            235,
+            0.4
+        );
+
+    background:
+        linear-gradient(
+            105deg,
+            #0c94a0,
+            #0fa7b4,
+            #1bbbc8
+        ) !important;
+
+    box-shadow:
+        0 10px 28px
+        rgba(
+            15,
+            167,
+            180,
+            0.26
+        ) !important;
+}
+
+[data-sidebar="menu-button"][data-active="true"]
+svg {
+    color:
+        white !important;
+}
+
+/*
+|--------------------------------------------------------------------------
+| TIPOGRAFÍA DE MARCA
+|--------------------------------------------------------------------------
+*/
+
+.adn-gradient-text {
+    color:
+        transparent;
+
+    background:
+        linear-gradient(
+            95deg,
+            #25d0da 0%,
+            #0fa7b4 43%,
+            #e84657 100%
+        );
+
+    background-clip:
+        text;
+
+    -webkit-background-clip:
+        text;
+}
+
+/*
+|--------------------------------------------------------------------------
+| CRISTAL
+|--------------------------------------------------------------------------
+*/
+
+.adn-glass {
+    border:
+        1px solid
+        rgba(
+            255,
+            255,
+            255,
+            0.075
+        );
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(
+                10,
+                20,
+                24,
+                0.96
+            ),
+            rgba(
+                7,
+                13,
+                16,
+                0.94
+            )
+        );
+
+    box-shadow:
+        0 24px 75px
+        rgba(
+            0,
+            0,
+            0,
+            0.22
+        );
+
+    backdrop-filter:
+        blur(18px);
+
+    -webkit-backdrop-filter:
+        blur(18px);
+}
+
+/*
+|--------------------------------------------------------------------------
+| TARJETAS
+|--------------------------------------------------------------------------
+*/
+
+.adn-card {
+    position: relative;
+
+    overflow: hidden;
+
+    border:
+        1px solid
+        rgba(
+            255,
+            255,
+            255,
+            0.075
+        );
+
+    border-radius:
+        1.25rem;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(
+                12,
+                23,
+                27,
+                0.98
+            ),
+            rgba(
+                7,
+                14,
+                17,
+                0.98
+            )
+        );
+
+    box-shadow:
+        0 16px 48px
+        rgba(
+            0,
+            0,
+            0,
+            0.15
+        );
+
+    transition:
+        transform 220ms ease,
+        border-color 220ms ease,
+        box-shadow 220ms ease;
+}
+
+.adn-card::before {
+    position: absolute;
+
+    inset: 0;
+
+    pointer-events: none;
+
+    content: '';
+
+    opacity: 0;
+
+    background:
+        radial-gradient(
+            circle at top right,
+            rgba(
+                15,
+                167,
+                180,
+                0.11
+            ),
+            transparent 50%
+        );
+
+    transition:
+        opacity 220ms ease;
+}
+
+.adn-card:hover {
+    transform:
+        translateY(
+            -3px
+        );
+
+    border-color:
+        rgba(
+            15,
+            167,
+            180,
+            0.22
+        );
+
+    box-shadow:
+        0 24px 65px
+        rgba(
+            0,
+            0,
+            0,
+            0.22
+        );
+}
+
+.adn-card:hover::before {
+    opacity: 1;
+}
+
+/*
+|--------------------------------------------------------------------------
+| MÓDULOS EXISTENTES
+|--------------------------------------------------------------------------
+*/
+
+.adn-page-host
+.rounded-2xl.border.bg-background,
+
+.adn-page-host
+.rounded-xl.border.bg-background {
+    border-color:
+        rgba(
+            255,
+            255,
+            255,
+            0.075
+        ) !important;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(
+                11,
+                21,
+                25,
+                0.98
+            ),
+            rgba(
+                7,
+                13,
+                16,
+                0.98
+            )
+        ) !important;
+
+    box-shadow:
+        0 14px 45px
+        rgba(
+            0,
+            0,
+            0,
+            0.14
+        );
+}
+
+/*
+|--------------------------------------------------------------------------
+| TABLAS
+|--------------------------------------------------------------------------
+*/
+
+.adn-page-host
+table {
+    width: 100%;
+
+    border-collapse:
+        separate;
+
+    border-spacing:
+        0;
+
+    overflow: hidden;
+}
+
+.adn-page-host
+thead {
+    background:
+        linear-gradient(
+            90deg,
+            rgba(
+                15,
+                167,
+                180,
+                0.09
+            ),
+            rgba(
+                255,
+                255,
+                255,
+                0.025
+            ),
+            rgba(
+                232,
+                70,
+                87,
+                0.04
+            )
+        );
+}
+
+.adn-page-host
+thead th {
+    color:
+        rgba(
+            255,
+            255,
+            255,
+            0.92
+        );
+
+    font-weight:
+        800;
+}
+
+.adn-page-host
+tbody tr {
+    transition:
+        background-color
+        170ms ease;
+}
+
+.adn-page-host
+tbody tr:hover {
+    background:
+        rgba(
+            15,
+            167,
+            180,
+            0.055
+        );
+}
+
+/*
+|--------------------------------------------------------------------------
+| INPUTS
+|--------------------------------------------------------------------------
+*/
+
+.adn-page-host
+input:not([type="checkbox"]):not([type="radio"]),
+
+.adn-page-host
+select,
+
+.adn-page-host
+textarea {
+    border-color:
+        rgba(
+            255,
+            255,
+            255,
+            0.1
+        );
+
+    background:
+        rgba(
+            255,
+            255,
+            255,
+            0.025
+        );
+
+    transition:
+        border-color 180ms ease,
+        background 180ms ease,
+        box-shadow 180ms ease;
+}
+
+.adn-page-host
+input:not([type="checkbox"]):not([type="radio"]):focus,
+
+.adn-page-host
+select:focus,
+
+.adn-page-host
+textarea:focus {
+    border-color:
+        rgba(
+            15,
+            167,
+            180,
+            0.7
+        ) !important;
+
+    background:
+        rgba(
+            15,
+            167,
+            180,
+            0.035
+        );
+
+    box-shadow:
+        0 0 0 3px
+        rgba(
+            15,
+            167,
+            180,
+            0.1
+        ) !important;
+}
+
+/*
+|--------------------------------------------------------------------------
+| BRILLO
+|--------------------------------------------------------------------------
+*/
+
+.adn-shine {
+    position: relative;
+
+    overflow: hidden;
+}
+
+.adn-shine::after {
+    position: absolute;
+
+    top: -100%;
+    left: -70%;
+
+    width: 34%;
+    height: 300%;
+
+    pointer-events: none;
+
+    content: '';
+
+    transform:
+        rotate(
+            25deg
+        );
+
+    background:
+        linear-gradient(
+            90deg,
+            transparent,
+            rgba(
+                255,
+                255,
+                255,
+                0.23
+            ),
+            transparent
+        );
+
+    transition:
+        left 650ms ease;
+}
+
+.adn-shine:hover::after {
+    left: 145%;
+}
+
+/*
+|--------------------------------------------------------------------------
+| PULSO
+|--------------------------------------------------------------------------
+*/
+
+.adn-pulse-dot {
+    position: relative;
+}
+
+.adn-pulse-dot::after {
+    position: absolute;
+
+    inset: -4px;
+
+    border-radius: inherit;
+
+    content: '';
+
+    background: inherit;
+
+    opacity: 0.42;
+
+    animation:
+        adnPulse
+        1.8s
+        ease-out
+        infinite;
+}
+
+/*
+|--------------------------------------------------------------------------
+| ENTRADA
+|--------------------------------------------------------------------------
+*/
+
+.adn-enter {
+    animation:
+        adnEnter
+        450ms
+        cubic-bezier(
+            0.2,
+            0.8,
+            0.2,
+            1
+        )
+        both;
+}
+
+.adn-enter-delay-1 {
+    animation-delay:
+        70ms;
+}
+
+.adn-enter-delay-2 {
+    animation-delay:
+        140ms;
+}
+
+.adn-enter-delay-3 {
+    animation-delay:
+        210ms;
+}
+
+@keyframes adnEnter {
+    from {
+        opacity: 0;
+
+        transform:
+            translateY(
+                10px
+            );
+    }
+
+    to {
+        opacity: 1;
+
+        transform:
+            translateY(
+                0
+            );
+    }
+}
+
+@keyframes adnPulse {
+    from {
+        transform:
+            scale(
+                0.9
+            );
+
+        opacity:
+            0.42;
+    }
+
+    to {
+        transform:
+            scale(
+                1.9
+            );
+
+        opacity:
+            0;
+    }
+}
+
+@media (
+    prefers-reduced-motion:
+        reduce
+) {
+    *,
+    *::before,
+    *::after {
+        animation-duration:
+            0.01ms !important;
+
+        animation-iteration-count:
+            1 !important;
+
+        transition-duration:
+            0.01ms !important;
+    }
+}

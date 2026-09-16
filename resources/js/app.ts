@@ -1,33 +1,179 @@
-import { createInertiaApp } from '@inertiajs/vue3';
-import { initializeTheme } from '@/composables/useAppearance';
+import {
+    createInertiaApp,
+} from '@inertiajs/vue3';
+
+import {
+    initializeTheme,
+} from '@/composables/useAppearance';
+
 import AppLayout from '@/layouts/AppLayout.vue';
 import AuthLayout from '@/layouts/AuthLayout.vue';
 import SettingsLayout from '@/layouts/settings/Layout.vue';
-import { initializeFlashToast } from '@/lib/flashToast';
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+import {
+    initializeFlashToast,
+} from '@/lib/flashToast';
 
-createInertiaApp({
-    title: (title) => (title ? `${title} - ${appName}` : appName),
-    layout: (name) => {
-        switch (true) {
-            case name === 'Welcome':
+import {
+    initializeGlobalSelects,
+} from '@/lib/globalSelects';
+
+import '../css/adn-mobile.css';
+
+/*
+|--------------------------------------------------------------------------
+| NOMBRE DE LA APLICACIÓN
+|--------------------------------------------------------------------------
+*/
+
+const appName =
+    import.meta.env.VITE_APP_NAME
+    || 'ADN Publicidad';
+
+/*
+|--------------------------------------------------------------------------
+| INERTIA
+|--------------------------------------------------------------------------
+*/
+
+const inertiaApp =
+    createInertiaApp({
+        title: (
+            title,
+        ) => {
+            return title
+                ? `${title} - ${appName}`
+                : appName;
+        },
+
+        layout: (
+            name,
+        ) => {
+            /*
+            |--------------------------------------------------------------------------
+            | LOGIN
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                name === 'auth/Login'
+            ) {
                 return null;
-            case name.startsWith('auth/'):
-                return AuthLayout;
-            case name.startsWith('settings/'):
-                return [AppLayout, SettingsLayout];
-            default:
-                return AppLayout;
-        }
-    },
-    progress: {
-        color: '#4B5563',
-    },
-});
+            }
 
-// This will set light / dark mode on page load...
+            /*
+            |--------------------------------------------------------------------------
+            | OTRAS PÁGINAS AUTH
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                name.startsWith(
+                    'auth/',
+                )
+            ) {
+                return AuthLayout;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | CONFIGURACIÓN DE CUENTA
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                name.startsWith(
+                    'settings/',
+                )
+            ) {
+                return [
+                    AppLayout,
+                    SettingsLayout,
+                ];
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | RESTO DE ADN PUBLICIDAD
+            |--------------------------------------------------------------------------
+            */
+
+            return null;
+        },
+
+        progress: {
+            color:
+                '#0fa7b4',
+        },
+    });
+
+/*
+|--------------------------------------------------------------------------
+| TEMA
+|--------------------------------------------------------------------------
+*/
+
 initializeTheme();
 
-// This will listen for flash toast data from the server...
+/*
+|--------------------------------------------------------------------------
+| FLASH TOAST
+|--------------------------------------------------------------------------
+*/
+
 initializeFlashToast();
+
+/*
+|--------------------------------------------------------------------------
+| SELECTORES ADN
+|--------------------------------------------------------------------------
+|
+| Esperamos explícitamente a que Inertia termine su inicialización.
+| Así los <select> de la primera página ya existen cuando realizamos
+| el primer escaneo.
+|
+*/
+
+if (
+    typeof window !==
+        'undefined'
+) {
+    void Promise
+        .resolve(
+            inertiaApp,
+        )
+        .then(
+            () => {
+                window.requestAnimationFrame(
+                    () => {
+                        initializeGlobalSelects();
+                    },
+                );
+            },
+        );
+}
+
+/*
+|--------------------------------------------------------------------------
+| BFCACHE / SEGURIDAD
+|--------------------------------------------------------------------------
+*/
+
+if (
+    typeof window !==
+        'undefined'
+) {
+    window.addEventListener(
+        'pageshow',
+        (
+            event:
+                PageTransitionEvent,
+        ) => {
+            if (
+                event.persisted
+            ) {
+                window.location.reload();
+            }
+        },
+    );
+}

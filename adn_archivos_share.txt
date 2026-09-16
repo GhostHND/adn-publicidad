@@ -1,0 +1,3491 @@
+================ QUOTATION CONTROLLER ================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\CatalogItem;
+use App\Models\Client;
+use App\Models\Quotation;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class QuotationController extends Controller
+{
+    public function index(): Response
+    {
+        $quotations = Quotation::query()
+            ->with('client')
+            ->latest('id')
+            ->get()
+            ->map(fn (Quotation $quotation) => [
+                'id' => $quotation->id,
+                'quotation_number' => $quotation->quotation_number,
+                'client' => $quotation->client?->display_name ?? 'Sin cliente',
+                'quotation_date' => $quotation->quotation_date?->format('Y-m-d'),
+                'valid_until' => $quotation->valid_until?->format('Y-m-d'),
+                'status' => $quotation->status,
+                'subtotal' => $quotation->subtotal,
+                'discount' => $quotation->discount,
+                'total' => $quotation->total,
+            ]);
+
+        return Inertia::render('Quotations/Index', [
+            'quotations' => $quotations,
+        ]);
+    }
+
+    public function create(): Response
+    {
+        return Inertia::render('Quotations/Create', [
+            'clients' => $this->clientsForForm(),
+            'catalogItems' => $this->catalogForForm(),
+        ]);
+    }
+
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $this->validateQuotation($request);
+
+        $quotation = DB::transaction(function () use ($validated, $request) {
+            $calculation = $this->calculateItems($validated['items']);
+
+            $nextNumber = (Quotation::withTrashed()->max('id') ?? 0) + 1;
+
+            $quotationNumber =
+                'COT-' .
+                now()->format('Y') .
+                '-' .
+                str_pad(
+                    (string) $nextNumber,
+                    4,
+                    '0',
+                    STR_PAD_LEFT
+                );
+
+            $discount = round(
+                min(
+                    (float) ($validated['discount'] ?? 0),
+                    $calculation['subtotal']
+                ),
+                2
+            );
+
+            $quotation = Quotation::create([
+                'quotation_number' => $quotationNumber,
+                'client_id' => $validated['client_id'],
+                'created_by' => $request->user()?->id,
+                'quotation_date' => $validated['quotation_date'],
+                'valid_until' => $validated['valid_until'] ?? null,
+                'status' => 'draft',
+                'subtotal' => $calculation['subtotal'],
+                'discount' => $discount,
+                'total' => round(
+                    $calculation['subtotal'] - $discount,
+                    2
+                ),
+                'estimated_cost' => $calculation['estimated_cost'],
+                'notes' => $validated['notes'] ?? null,
+            ]);
+
+            foreach ($calculation['items'] as $index => $item) {
+                $quotation->items()->create([
+                    ...$item,
+                    'sort_order' => $index,
+                ]);
+            }
+
+            return $quotation;
+        });
+
+        return redirect()
+            ->route('quotations.show', $quotation)
+            ->with('success', 'Cotización creada correctamente.');
+    }
+
+    public function show(Quotation $quotation): Response
+    {
+        $quotation->load(['client', 'items']);
+
+        return Inertia::render('Quotations/Show', [
+            'quotation' => $this->quotationForFrontend($quotation),
+        ]);
+    }
+
+    public function edit(Quotation $quotation): Response
+    {
+        $quotation->load('items');
+
+        return Inertia::render('Quotations/Edit', [
+            'quotation' => [
+                'id' => $quotation->id,
+                'quotation_number' => $quotation->quotation_number,
+                'client_id' => $quotation->client_id,
+                'quotation_date' => $quotation->quotation_date?->format('Y-m-d'),
+                'valid_until' => $quotation->valid_until?->format('Y-m-d'),
+                'discount' => $quotation->discount,
+                'notes' => $quotation->notes,
+                'items' => $quotation->items->map(
+                    fn ($item) => [
+                        'catalog_item_id' => $item->catalog_item_id,
+                        'quantity' => $item->quantity,
+                        'width' => $item->width,
+                        'height' => $item->height,
+                        'manual_price' => $item->pricing_method === 'MANUAL'
+                            ? $item->unit_price
+                            : '',
+                    ]
+                )->values(),
+            ],
+            'clients' => $this->clientsForForm(),
+            'catalogItems' => $this->catalogForForm(),
+        ]);
+    }
+
+    public function update(
+        Request $request,
+        Quotation $quotation
+    ): RedirectResponse {
+        $validated = $this->validateQuotation($request);
+
+        DB::transaction(function () use ($validated, $quotation) {
+            $calculation = $this->calculateItems($validated['items']);
+
+            $discount = round(
+                min(
+                    (float) ($validated['discount'] ?? 0),
+                    $calculation['subtotal']
+                ),
+                2
+            );
+
+            $quotation->update([
+                'client_id' => $validated['client_id'],
+                'quotation_date' => $validated['quotation_date'],
+                'valid_until' => $validated['valid_until'] ?? null,
+                'subtotal' => $calculation['subtotal'],
+                'discount' => $discount,
+                'total' => round(
+                    $calculation['subtotal'] - $discount,
+                    2
+                ),
+                'estimated_cost' => $calculation['estimated_cost'],
+                'notes' => $validated['notes'] ?? null,
+            ]);
+
+            $quotation->items()->delete();
+
+            foreach ($calculation['items'] as $index => $item) {
+                $quotation->items()->create([
+                    ...$item,
+                    'sort_order' => $index,
+                ]);
+            }
+        });
+
+        return redirect()
+            ->route('quotations.show', $quotation)
+            ->with('success', 'Cotización actualizada correctamente.');
+    }
+
+    public function updateStatus(
+        Request $request,
+        Quotation $quotation
+    ): RedirectResponse {
+        $validated = $request->validate([
+            'status' => [
+                'required',
+                Rule::in([
+                    'draft',
+                    'sent',
+                    'approved',
+                    'rejected',
+                    'expired',
+                ]),
+            ],
+        ]);
+
+        $quotation->update([
+            'status' => $validated['status'],
+        ]);
+
+        return back()->with(
+            'success',
+            'Estado actualizado correctamente.'
+        );
+    }
+
+    private function validateQuotation(Request $request): array
+    {
+        return $request->validate([
+            'client_id' => [
+                'required',
+                'integer',
+                Rule::exists('clients', 'id')
+                    ->whereNull('deleted_at'),
+            ],
+
+            'quotation_date' => [
+                'required',
+                'date',
+            ],
+
+            'valid_until' => [
+                'nullable',
+                'date',
+                'after_or_equal:quotation_date',
+            ],
+
+            'discount' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'notes' => [
+                'nullable',
+                'string',
+            ],
+
+            'items' => [
+                'required',
+                'array',
+                'min:1',
+            ],
+
+            'items.*.catalog_item_id' => [
+                'required',
+                'integer',
+                Rule::exists('catalog_items', 'id')
+                    ->whereNull('deleted_at'),
+            ],
+
+            'items.*.quantity' => [
+                'required',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.width' => [
+                'nullable',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.height' => [
+                'nullable',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.manual_price' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+        ]);
+    }
+
+    private function calculateItems(array $items): array
+    {
+        $calculatedItems = [];
+        $subtotal = 0;
+        $estimatedCost = 0;
+
+        foreach ($items as $itemData) {
+            $catalogItem = CatalogItem::query()
+                ->findOrFail($itemData['catalog_item_id']);
+
+            $quantity = (float) $itemData['quantity'];
+            $width = isset($itemData['width'])
+                ? (float) $itemData['width']
+                : null;
+            $height = isset($itemData['height'])
+                ? (float) $itemData['height']
+                : null;
+
+            $lineSubtotal = 0;
+            $lineCost = 0;
+            $unitPrice = null;
+            $unitCost = null;
+            $saleRate = null;
+            $costRate = null;
+
+            switch ($catalogItem->pricing_method) {
+                case 'AREA':
+                    if (!$width || !$height) {
+                        abort(
+                            422,
+                            "El producto {$catalogItem->name} requiere ancho y alto."
+                        );
+                    }
+
+                    $saleRate = (float) ($catalogItem->sale_rate ?? 0);
+                    $costRate = (float) ($catalogItem->cost_rate ?? 0);
+
+                    $area = $width * $height;
+
+                    $lineSubtotal = $area * $saleRate * $quantity;
+                    $lineCost = $area * $costRate * $quantity;
+                    break;
+
+                case 'LINEAR':
+                    if (!$width) {
+                        abort(
+                            422,
+                            "El producto {$catalogItem->name} requiere una medida."
+                        );
+                    }
+
+                    $saleRate = (float) ($catalogItem->sale_rate ?? 0);
+                    $costRate = (float) ($catalogItem->cost_rate ?? 0);
+
+                    $lineSubtotal = $width * $saleRate * $quantity;
+                    $lineCost = $width * $costRate * $quantity;
+                    break;
+
+                case 'MANUAL':
+                    $unitPrice = (float) ($itemData['manual_price'] ?? 0);
+
+                    if ($unitPrice < 0) {
+                        abort(
+                            422,
+                            "El precio de {$catalogItem->name} no es válido."
+                        );
+                    }
+
+                    $unitCost = (float) ($catalogItem->cost_price ?? 0);
+
+                    $lineSubtotal = $unitPrice * $quantity;
+                    $lineCost = $unitCost * $quantity;
+                    break;
+
+                case 'UNIT':
+                case 'FIXED':
+                case 'RESALE':
+                case 'COST_MARGIN':
+                    $unitPrice = (float) ($catalogItem->sale_price ?? 0);
+                    $unitCost = (float) ($catalogItem->cost_price ?? 0);
+
+                    $lineSubtotal = $unitPrice * $quantity;
+                    $lineCost = $unitCost * $quantity;
+                    break;
+            }
+
+            $lineSubtotal = round($lineSubtotal, 2);
+            $lineCost = round($lineCost, 2);
+
+            $subtotal += $lineSubtotal;
+            $estimatedCost += $lineCost;
+
+            $calculatedItems[] = [
+                'catalog_item_id' => $catalogItem->id,
+                'item_code' => $catalogItem->item_code,
+                'item_name' => $catalogItem->name,
+                'description' => $catalogItem->description,
+                'pricing_method' => $catalogItem->pricing_method,
+                'measurement_unit' => $catalogItem->measurement_unit,
+                'quantity' => $quantity,
+                'width' => $width,
+                'height' => $height,
+                'unit_price' => $unitPrice,
+                'unit_cost' => $unitCost,
+                'sale_rate' => $saleRate,
+                'cost_rate' => $costRate,
+                'subtotal' => $lineSubtotal,
+                'estimated_cost' => $lineCost,
+            ];
+        }
+
+        return [
+            'items' => $calculatedItems,
+            'subtotal' => round($subtotal, 2),
+            'estimated_cost' => round($estimatedCost, 2),
+        ];
+    }
+
+    private function clientsForForm(): array
+    {
+        return Client::query()
+            ->active()
+            ->orderBy('first_name')
+            ->orderBy('business_name')
+            ->get()
+            ->map(fn (Client $client) => [
+                'id' => $client->id,
+                'code' => $client->client_code,
+                'name' => $client->display_name,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function catalogForForm(): array
+    {
+        return CatalogItem::query()
+            ->active()
+            ->orderBy('name')
+            ->get()
+            ->map(fn (CatalogItem $item) => [
+                'id' => $item->id,
+                'item_code' => $item->item_code,
+                'name' => $item->name,
+                'pricing_method' => $item->pricing_method,
+                'measurement_unit' => $item->measurement_unit,
+                'sale_price' => $item->sale_price,
+                'cost_price' => $item->cost_price,
+                'sale_rate' => $item->sale_rate,
+                'cost_rate' => $item->cost_rate,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function quotationForFrontend(
+        Quotation $quotation
+    ): array {
+        return [
+            'id' => $quotation->id,
+            'quotation_number' => $quotation->quotation_number,
+            'client' => $quotation->client?->display_name,
+            'client_code' => $quotation->client?->client_code,
+            'quotation_date' => $quotation->quotation_date?->format('Y-m-d'),
+            'valid_until' => $quotation->valid_until?->format('Y-m-d'),
+            'status' => $quotation->status,
+            'subtotal' => $quotation->subtotal,
+            'discount' => $quotation->discount,
+            'total' => $quotation->total,
+            'estimated_cost' => $quotation->estimated_cost,
+            'notes' => $quotation->notes,
+
+            'items' => $quotation->items->map(
+                fn ($item) => [
+                    'id' => $item->id,
+                    'item_code' => $item->item_code,
+                    'item_name' => $item->item_name,
+                    'description' => $item->description,
+                    'pricing_method' => $item->pricing_method,
+                    'measurement_unit' => $item->measurement_unit,
+                    'quantity' => $item->quantity,
+                    'width' => $item->width,
+                    'height' => $item->height,
+                    'unit_price' => $item->unit_price,
+                    'sale_rate' => $item->sale_rate,
+                    'subtotal' => $item->subtotal,
+                ]
+            )->values(),
+        ];
+    }
+}
+
+================ SALE CONTROLLER ================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\CatalogItem;
+use App\Models\Client;
+use App\Models\FinancialAccount;
+use App\Models\Quotation;
+use App\Models\Sale;
+use App\Models\SaleItem;
+use App\Models\SalePayment;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class SaleController extends Controller
+{
+    public function index(): Response
+    {
+        $sales = Sale::query()
+            ->with([
+                'client',
+                'payments',
+            ])
+            ->latest('sale_date')
+            ->latest('id')
+            ->get()
+            ->map(function (Sale $sale) {
+                return [
+                    'id' => $sale->id,
+                    'sale_number' => $sale->sale_number,
+                    'sale_date' => $sale->sale_date?->format('Y-m-d'),
+
+                    'client' => $sale->client?->display_name
+                        ?? 'Sin cliente',
+
+                    'client_code' => $sale->client?->client_code,
+
+                    'status' => $sale->status,
+
+                    'subtotal' => $sale->subtotal,
+                    'discount' => $sale->discount,
+                    'total' => $sale->total,
+
+                    'paid_amount' => $sale->paid_amount,
+                    'balance' => $sale->balance,
+                ];
+            })
+            ->values();
+
+        return Inertia::render('Sales/Index', [
+            'sales' => $sales,
+        ]);
+    }
+
+    public function create(): Response
+    {
+        return Inertia::render('Sales/Create', [
+            'clients' => $this->clientsForForm(),
+            'catalogItems' => $this->catalogForForm(),
+            'financialAccounts' =>
+                $this->financialAccountsForForm(),
+        ]);
+    }
+
+    public function store(
+        Request $request
+    ): RedirectResponse {
+        $validated = $this->validateSale($request);
+
+        $sale = DB::transaction(function () use (
+            $validated,
+            $request
+        ) {
+            $calculation = $this->calculateItems(
+                $validated['items']
+            );
+
+            $discount = round(
+                (float) ($validated['discount'] ?? 0),
+                2
+            );
+
+            if ($discount > $calculation['subtotal']) {
+                throw ValidationException::withMessages([
+                    'discount' =>
+                        'El descuento no puede superar el subtotal.',
+                ]);
+            }
+
+            $total = round(
+                $calculation['subtotal'] - $discount,
+                2
+            );
+
+            $sale = Sale::create([
+                'sale_number' =>
+                    $this->nextSaleNumber(),
+
+                'client_id' =>
+                    $validated['client_id'],
+
+                'quotation_id' =>
+                    null,
+
+                'created_by' =>
+                    $request->user()?->id,
+
+                'sale_date' =>
+                    $validated['sale_date'],
+
+                'status' =>
+                    'pending',
+
+                'subtotal' =>
+                    $calculation['subtotal'],
+
+                'discount' =>
+                    $discount,
+
+                'total' =>
+                    $total,
+
+                'estimated_cost' =>
+                    $calculation['estimated_cost'],
+
+                'notes' =>
+                    $validated['notes'] ?? null,
+            ]);
+
+            foreach (
+                $calculation['items']
+                as $index => $item
+            ) {
+                $sale->items()->create([
+                    ...$item,
+                    'sort_order' => $index + 1,
+                ]);
+            }
+
+            $initialPayment = round(
+                (float) (
+                    $validated['initial_payment_amount']
+                    ?? 0
+                ),
+                2
+            );
+
+            if ($initialPayment > 0) {
+                if ($initialPayment > $total) {
+                    throw ValidationException::withMessages([
+                        'initial_payment_amount' =>
+                            'El pago inicial no puede superar el total de la venta.',
+                    ]);
+                }
+
+                $this->createPayment(
+                    sale: $sale,
+                    amount: $initialPayment,
+                    paymentDate: $validated['sale_date'],
+                    paymentMethod:
+                        $validated['initial_payment_method'],
+                    financialAccountId:
+                        $validated[
+                            'initial_payment_financial_account_id'
+                        ] ?? null,
+                    reference:
+                        $validated[
+                            'initial_payment_reference'
+                        ] ?? null,
+                    notes:
+                        $validated[
+                            'initial_payment_notes'
+                        ] ?? null,
+                    userId:
+                        $request->user()?->id
+                );
+            }
+
+            $this->refreshSaleStatus($sale);
+
+            return $sale;
+        });
+
+        return redirect()
+            ->route('sales.show', $sale)
+            ->with(
+                'success',
+                'Venta registrada correctamente.'
+            );
+    }
+
+    public function show(
+        Sale $sale
+    ): Response {
+        $sale->load([
+            'client',
+            'items',
+            'payments.financialAccount',
+            'payments.receiver',
+            'quotation',
+        ]);
+
+        return Inertia::render('Sales/Show', [
+            'sale' =>
+                $this->saleForFrontend($sale),
+
+            'financialAccounts' =>
+                $this->financialAccountsForForm(),
+        ]);
+    }
+
+    public function addPayment(
+        Request $request,
+        Sale $sale
+    ): RedirectResponse {
+        $sale->load('payments');
+
+        if ($sale->status === 'cancelled') {
+            return back()->withErrors([
+                'amount' =>
+                    'No se pueden registrar pagos en una venta cancelada.',
+            ]);
+        }
+
+        if ($sale->balance <= 0) {
+            return back()->withErrors([
+                'amount' =>
+                    'La venta ya está pagada completamente.',
+            ]);
+        }
+
+        $validated = $request->validate([
+            'payment_date' => [
+                'required',
+                'date',
+            ],
+
+            'amount' => [
+                'required',
+                'numeric',
+                'gt:0',
+            ],
+
+            'payment_method' => [
+                'required',
+                Rule::in([
+                    'cash',
+                    'transfer',
+                    'card',
+                    'other',
+                ]),
+            ],
+
+            'financial_account_id' => [
+                Rule::requiredIf(
+                    fn () =>
+                        $request->payment_method
+                        !== 'cash'
+                ),
+
+                'nullable',
+                'integer',
+
+                Rule::exists(
+                    'financial_accounts',
+                    'id'
+                )->where(
+                    fn ($query) =>
+                        $query
+                            ->where('active', true)
+                            ->whereNull('deleted_at')
+                ),
+            ],
+
+            'reference' => [
+                'nullable',
+                'string',
+                'max:150',
+            ],
+
+            'notes' => [
+                'nullable',
+                'string',
+            ],
+        ]);
+
+        $amount = round(
+            (float) $validated['amount'],
+            2
+        );
+
+        if ($amount > $sale->balance) {
+            return back()->withErrors([
+                'amount' =>
+                    'El pago no puede superar el saldo pendiente de L ' .
+                    number_format(
+                        $sale->balance,
+                        2
+                    ) .
+                    '.',
+            ]);
+        }
+
+        DB::transaction(function () use (
+            $sale,
+            $validated,
+            $amount,
+            $request
+        ) {
+            $this->createPayment(
+                sale: $sale,
+                amount: $amount,
+                paymentDate:
+                    $validated['payment_date'],
+                paymentMethod:
+                    $validated['payment_method'],
+                financialAccountId:
+                    $validated['payment_method']
+                    === 'cash'
+                        ? null
+                        : (
+                            $validated[
+                                'financial_account_id'
+                            ] ?? null
+                        ),
+                reference:
+                    $validated['reference'] ?? null,
+                notes:
+                    $validated['notes'] ?? null,
+                userId:
+                    $request->user()?->id
+            );
+
+            $this->refreshSaleStatus($sale);
+        });
+
+        return back()->with(
+            'success',
+            'Pago registrado correctamente.'
+        );
+    }
+
+    public function convertFromQuotation(
+        Quotation $quotation
+    ): RedirectResponse {
+        $quotation->load([
+            'items',
+            'client',
+        ]);
+
+        if ($quotation->status !== 'approved') {
+            return back()->withErrors([
+                'quotation' =>
+                    'Solo las cotizaciones aprobadas pueden convertirse en venta.',
+            ]);
+        }
+
+        $existing = Sale::query()
+            ->where(
+                'quotation_id',
+                $quotation->id
+            )
+            ->first();
+
+        if ($existing) {
+            return redirect()
+                ->route(
+                    'sales.show',
+                    $existing
+                );
+        }
+
+        $sale = DB::transaction(
+            function () use ($quotation) {
+                $sale = Sale::create([
+                    'sale_number' =>
+                        $this->nextSaleNumber(),
+
+                    'client_id' =>
+                        $quotation->client_id,
+
+                    'quotation_id' =>
+                        $quotation->id,
+
+                    'created_by' =>
+                        auth()->id(),
+
+                    'sale_date' =>
+                        now()->toDateString(),
+
+                    'status' =>
+                        'pending',
+
+                    'subtotal' =>
+                        $quotation->subtotal,
+
+                    'discount' =>
+                        $quotation->discount,
+
+                    'total' =>
+                        $quotation->total,
+
+                    'estimated_cost' =>
+                        $quotation->estimated_cost,
+
+                    'notes' =>
+                        $quotation->notes,
+                ]);
+
+                foreach (
+                    $quotation->items
+                    as $quotationItem
+                ) {
+                    $sale->items()->create([
+                        'catalog_item_id' =>
+                            $quotationItem
+                                ->catalog_item_id,
+
+                        'item_code' =>
+                            $quotationItem
+                                ->item_code,
+
+                        'item_name' =>
+                            $quotationItem
+                                ->item_name,
+
+                        'description' =>
+                            $quotationItem
+                                ->description,
+
+                        'pricing_method' =>
+                            $quotationItem
+                                ->pricing_method,
+
+                        'measurement_unit' =>
+                            $quotationItem
+                                ->measurement_unit,
+
+                        'quantity' =>
+                            $quotationItem
+                                ->quantity,
+
+                        'width' =>
+                            $quotationItem
+                                ->width,
+
+                        'height' =>
+                            $quotationItem
+                                ->height,
+
+                        'unit_price' =>
+                            $quotationItem
+                                ->unit_price,
+
+                        'unit_cost' =>
+                            $quotationItem
+                                ->unit_cost,
+
+                        'sale_rate' =>
+                            $quotationItem
+                                ->sale_rate,
+
+                        'cost_rate' =>
+                            $quotationItem
+                                ->cost_rate,
+
+                        'subtotal' =>
+                            $quotationItem
+                                ->subtotal,
+
+                        'estimated_cost' =>
+                            $quotationItem
+                                ->estimated_cost,
+
+                        'sort_order' =>
+                            $quotationItem
+                                ->sort_order,
+                    ]);
+                }
+
+                return $sale;
+            }
+        );
+
+        return redirect()
+            ->route('sales.show', $sale)
+            ->with(
+                'success',
+                'Cotización convertida en venta correctamente.'
+            );
+    }
+
+    public function cancel(
+        Sale $sale
+    ): RedirectResponse {
+        $sale->load('payments');
+
+        if ($sale->payments->isNotEmpty()) {
+            return back()->withErrors([
+                'sale' =>
+                    'No puedes cancelar una venta que ya tiene pagos registrados.',
+            ]);
+        }
+
+        $sale->update([
+            'status' => 'cancelled',
+        ]);
+
+        return back()->with(
+            'success',
+            'Venta cancelada correctamente.'
+        );
+    }
+
+    private function validateSale(
+        Request $request
+    ): array {
+        return $request->validate([
+            'client_id' => [
+                'required',
+                'integer',
+                Rule::exists(
+                    'clients',
+                    'id'
+                )->whereNull('deleted_at'),
+            ],
+
+            'sale_date' => [
+                'required',
+                'date',
+            ],
+
+            'discount' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'notes' => [
+                'nullable',
+                'string',
+            ],
+
+            'items' => [
+                'required',
+                'array',
+                'min:1',
+            ],
+
+            'items.*.catalog_item_id' => [
+                'required',
+                'integer',
+                Rule::exists(
+                    'catalog_items',
+                    'id'
+                )->whereNull('deleted_at'),
+            ],
+
+            'items.*.quantity' => [
+                'required',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.width' => [
+                'nullable',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.height' => [
+                'nullable',
+                'numeric',
+                'gt:0',
+            ],
+
+            'items.*.manual_unit_price' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'initial_payment_amount' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'initial_payment_method' => [
+                Rule::requiredIf(
+                    fn () =>
+                        (float)
+                        $request
+                            ->initial_payment_amount
+                        > 0
+                ),
+
+                'nullable',
+
+                Rule::in([
+                    'cash',
+                    'transfer',
+                    'card',
+                    'other',
+                ]),
+            ],
+
+            'initial_payment_financial_account_id' => [
+                Rule::requiredIf(
+                    fn () =>
+                        (float)
+                        $request
+                            ->initial_payment_amount
+                        > 0
+                        &&
+                        $request
+                            ->initial_payment_method
+                        !== 'cash'
+                ),
+
+                'nullable',
+                'integer',
+
+                Rule::exists(
+                    'financial_accounts',
+                    'id'
+                )->where(
+                    fn ($query) =>
+                        $query
+                            ->where('active', true)
+                            ->whereNull('deleted_at')
+                ),
+            ],
+
+            'initial_payment_reference' => [
+                'nullable',
+                'string',
+                'max:150',
+            ],
+
+            'initial_payment_notes' => [
+                'nullable',
+                'string',
+            ],
+        ]);
+    }
+
+    private function calculateItems(
+        array $items
+    ): array {
+        $calculated = [];
+
+        $subtotal = 0;
+        $estimatedCost = 0;
+
+        foreach (
+            $items
+            as $requestItem
+        ) {
+            $catalogItem =
+                CatalogItem::query()
+                    ->findOrFail(
+                        $requestItem[
+                            'catalog_item_id'
+                        ]
+                    );
+
+            $quantity =
+                (float)
+                $requestItem['quantity'];
+
+            $width =
+                isset(
+                    $requestItem['width']
+                )
+                && $requestItem['width'] !== ''
+                    ? (float)
+                        $requestItem['width']
+                    : null;
+
+            $height =
+                isset(
+                    $requestItem['height']
+                )
+                && $requestItem['height'] !== ''
+                    ? (float)
+                        $requestItem['height']
+                    : null;
+
+            $method =
+                $catalogItem->pricing_method;
+
+            $unitPrice = 0;
+            $unitCost = 0;
+
+            if ($method === 'AREA') {
+                if (
+                    !$width
+                    || !$height
+                ) {
+                    throw ValidationException::withMessages([
+                        'items' =>
+                            "El artículo {$catalogItem->name} requiere ancho y alto.",
+                    ]);
+                }
+
+                $area =
+                    $width * $height;
+
+                $unitPrice =
+                    $area *
+                    (float)
+                    $catalogItem->sale_rate;
+
+                $unitCost =
+                    $area *
+                    (float)
+                    $catalogItem->cost_rate;
+            } elseif (
+                $method === 'LINEAR'
+            ) {
+                if (!$width) {
+                    throw ValidationException::withMessages([
+                        'items' =>
+                            "El artículo {$catalogItem->name} requiere una medida lineal.",
+                    ]);
+                }
+
+                $unitPrice =
+                    $width *
+                    (float)
+                    $catalogItem->sale_rate;
+
+                $unitCost =
+                    $width *
+                    (float)
+                    $catalogItem->cost_rate;
+            } elseif (
+                $method === 'MANUAL'
+            ) {
+                $unitPrice =
+                    (float) (
+                        $requestItem[
+                            'manual_unit_price'
+                        ] ?? 0
+                    );
+
+                $unitCost =
+                    (float)
+                    $catalogItem->cost_price;
+            } else {
+                $unitPrice =
+                    (float)
+                    $catalogItem->sale_price;
+
+                $unitCost =
+                    (float)
+                    $catalogItem->cost_price;
+            }
+
+            $itemSubtotal = round(
+                $unitPrice * $quantity,
+                2
+            );
+
+            $itemCost = round(
+                $unitCost * $quantity,
+                2
+            );
+
+            $subtotal += $itemSubtotal;
+            $estimatedCost += $itemCost;
+
+            $calculated[] = [
+                'catalog_item_id' =>
+                    $catalogItem->id,
+
+                'item_code' =>
+                    $catalogItem->item_code,
+
+                'item_name' =>
+                    $catalogItem->name,
+
+                'description' =>
+                    $catalogItem->description,
+
+                'pricing_method' =>
+                    $catalogItem->pricing_method,
+
+                'measurement_unit' =>
+                    $catalogItem->measurement_unit,
+
+                'quantity' =>
+                    $quantity,
+
+                'width' =>
+                    $width,
+
+                'height' =>
+                    $height,
+
+                'unit_price' =>
+                    round($unitPrice, 2),
+
+                'unit_cost' =>
+                    round($unitCost, 2),
+
+                'sale_rate' =>
+                    $catalogItem->sale_rate,
+
+                'cost_rate' =>
+                    $catalogItem->cost_rate,
+
+                'subtotal' =>
+                    $itemSubtotal,
+
+                'estimated_cost' =>
+                    $itemCost,
+            ];
+        }
+
+        return [
+            'items' =>
+                $calculated,
+
+            'subtotal' =>
+                round($subtotal, 2),
+
+            'estimated_cost' =>
+                round(
+                    $estimatedCost,
+                    2
+                ),
+        ];
+    }
+
+    private function createPayment(
+        Sale $sale,
+        float $amount,
+        string $paymentDate,
+        string $paymentMethod,
+        ?int $financialAccountId,
+        ?string $reference,
+        ?string $notes,
+        ?int $userId
+    ): SalePayment {
+        if (
+            $paymentMethod !== 'cash'
+            && !$financialAccountId
+        ) {
+            throw ValidationException::withMessages([
+                'financial_account_id' =>
+                    'Debes seleccionar la cuenta bancaria donde se recibió el pago.',
+            ]);
+        }
+
+        if ($paymentMethod === 'cash') {
+            $financialAccountId = null;
+        }
+
+        return SalePayment::create([
+            'receipt_number' =>
+                $this->nextReceiptNumber(),
+
+            'sale_id' =>
+                $sale->id,
+
+            'financial_account_id' =>
+                $financialAccountId,
+
+            'received_by' =>
+                $userId,
+
+            'payment_date' =>
+                $paymentDate,
+
+            'amount' =>
+                round($amount, 2),
+
+            'payment_method' =>
+                $paymentMethod,
+
+            'reference' =>
+                $reference,
+
+            'notes' =>
+                $notes,
+        ]);
+    }
+
+    private function refreshSaleStatus(
+        Sale $sale
+    ): void {
+        $sale->load('payments');
+
+        if (
+            $sale->status === 'cancelled'
+        ) {
+            return;
+        }
+
+        $paid =
+            (float)
+            $sale->paid_amount;
+
+        $total =
+            (float)
+            $sale->total;
+
+        if ($paid <= 0) {
+            $status = 'pending';
+        } elseif ($paid < $total) {
+            $status = 'partial';
+        } else {
+            $status = 'paid';
+        }
+
+        $sale->update([
+            'status' => $status,
+        ]);
+    }
+
+    private function nextSaleNumber(): string
+    {
+        $next =
+            (Sale::withTrashed()->max('id') ?? 0)
+            + 1;
+
+        return 'VEN-' .
+            now()->format('Y') .
+            '-' .
+            str_pad(
+                (string) $next,
+                4,
+                '0',
+                STR_PAD_LEFT
+            );
+    }
+
+    private function nextReceiptNumber(): string
+    {
+        $next =
+            (SalePayment::withTrashed()
+                ->max('id') ?? 0)
+            + 1;
+
+        return 'REC-' .
+            now()->format('Y') .
+            '-' .
+            str_pad(
+                (string) $next,
+                4,
+                '0',
+                STR_PAD_LEFT
+            );
+    }
+
+    private function clientsForForm(): array
+    {
+        return Client::query()
+            ->active()
+            ->orderBy('first_name')
+            ->orderBy('business_name')
+            ->get()
+            ->map(fn (Client $client) => [
+                'id' =>
+                    $client->id,
+
+                'code' =>
+                    $client->client_code,
+
+                'name' =>
+                    $client->display_name,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function catalogForForm(): array
+    {
+        return CatalogItem::query()
+            ->active()
+            ->orderBy('name')
+            ->get()
+            ->map(
+                fn (
+                    CatalogItem $item
+                ) => [
+                    'id' =>
+                        $item->id,
+
+                    'code' =>
+                        $item->item_code,
+
+                    'name' =>
+                        $item->name,
+
+                    'description' =>
+                        $item->description,
+
+                    'pricing_method' =>
+                        $item->pricing_method,
+
+                    'measurement_unit' =>
+                        $item->measurement_unit,
+
+                    'sale_price' =>
+                        $item->sale_price,
+
+                    'cost_price' =>
+                        $item->cost_price,
+
+                    'sale_rate' =>
+                        $item->sale_rate,
+
+                    'cost_rate' =>
+                        $item->cost_rate,
+                ]
+            )
+            ->values()
+            ->all();
+    }
+
+    private function financialAccountsForForm(): array
+    {
+        return FinancialAccount::query()
+            ->active()
+            ->orderBy('name')
+            ->get()
+            ->map(
+                fn (
+                    FinancialAccount $account
+                ) => [
+                    'id' =>
+                        $account->id,
+
+                    'code' =>
+                        $account->account_code,
+
+                    'name' =>
+                        $account->name,
+
+                    'institution' =>
+                        $account->institution,
+
+                    'account_type' =>
+                        $account->account_type,
+                ]
+            )
+            ->values()
+            ->all();
+    }
+
+    private function saleForFrontend(
+        Sale $sale
+    ): array {
+        return [
+            'id' =>
+                $sale->id,
+
+            'sale_number' =>
+                $sale->sale_number,
+
+            'sale_date' =>
+                $sale->sale_date?->format(
+                    'Y-m-d'
+                ),
+
+            'status' =>
+                $sale->status,
+
+            'subtotal' =>
+                $sale->subtotal,
+
+            'discount' =>
+                $sale->discount,
+
+            'total' =>
+                $sale->total,
+
+            'estimated_cost' =>
+                $sale->estimated_cost,
+
+            'paid_amount' =>
+                $sale->paid_amount,
+
+            'balance' =>
+                $sale->balance,
+
+            'notes' =>
+                $sale->notes,
+
+            'quotation_id' =>
+                $sale->quotation_id,
+
+            'quotation_number' =>
+                $sale->quotation?->quotation_number,
+
+            'client' => [
+                'id' =>
+                    $sale->client?->id,
+
+                'code' =>
+                    $sale->client?->client_code,
+
+                'name' =>
+                    $sale->client?->display_name,
+
+                'phone' =>
+                    $sale->client?->phone,
+
+                'email' =>
+                    $sale->client?->email,
+
+                'address' =>
+                    $sale->client?->address,
+            ],
+
+            'items' =>
+                $sale->items
+                    ->map(fn ($item) => [
+                        'id' =>
+                            $item->id,
+
+                        'item_code' =>
+                            $item->item_code,
+
+                        'item_name' =>
+                            $item->item_name,
+
+                        'description' =>
+                            $item->description,
+
+                        'pricing_method' =>
+                            $item->pricing_method,
+
+                        'measurement_unit' =>
+                            $item->measurement_unit,
+
+                        'quantity' =>
+                            $item->quantity,
+
+                        'width' =>
+                            $item->width,
+
+                        'height' =>
+                            $item->height,
+
+                        'unit_price' =>
+                            $item->unit_price,
+
+                        'subtotal' =>
+                            $item->subtotal,
+                    ])
+                    ->values(),
+
+            'payments' =>
+                $sale->payments
+                    ->map(
+                        fn (
+                            SalePayment $payment
+                        ) => [
+                            'id' =>
+                                $payment->id,
+
+                            'receipt_number' =>
+                                $payment->receipt_number,
+
+                            'payment_date' =>
+                                $payment
+                                    ->payment_date
+                                    ?->format(
+                                        'Y-m-d'
+                                    ),
+
+                            'amount' =>
+                                $payment->amount,
+
+                            'payment_method' =>
+                                $payment->payment_method,
+
+                            'financial_account_id' =>
+                                $payment
+                                    ->financial_account_id,
+
+                            'financial_account' =>
+                                $payment
+                                    ->financialAccount
+                                    ?->name,
+
+                            'reference' =>
+                                $payment->reference,
+
+                            'notes' =>
+                                $payment->notes,
+
+                            'received_by' =>
+                                $payment
+                                    ->receiver
+                                    ?->name,
+                        ]
+                    )
+                    ->values(),
+        ];
+    }
+}
+
+================ RECEIPT CONTROLLER ================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\SalePayment;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class ReceiptController extends Controller
+{
+    public function index(): Response
+    {
+        $receipts = SalePayment::query()
+            ->with([
+                'sale.client',
+            ])
+            ->orderByDesc('payment_date')
+            ->orderByDesc('id')
+            ->get()
+            ->map(fn (SalePayment $payment) => [
+                'id' => $payment->id,
+                'receipt_number' => $payment->receipt_number,
+                'sale_id' => $payment->sale_id,
+                'sale_number' => $payment->sale?->sale_number,
+                'client' => $payment->sale?->client?->display_name
+                    ?? 'Sin cliente',
+                'payment_date' => $payment->payment_date?->format('Y-m-d'),
+                'amount' => $payment->amount,
+                'payment_method' => $payment->payment_method,
+                'reference' => $payment->reference,
+            ])
+            ->values();
+
+        return Inertia::render('Receipts/Index', [
+            'receipts' => $receipts,
+        ]);
+    }
+
+    public function show(SalePayment $salePayment): Response
+    {
+        $salePayment->load([
+            'sale.client',
+            'receiver',
+        ]);
+
+        return Inertia::render('Receipts/Show', [
+            'receipt' => $this->receiptForFrontend($salePayment),
+        ]);
+    }
+
+    public function print(SalePayment $salePayment): Response
+    {
+        $salePayment->load([
+            'sale.client',
+            'receiver',
+        ]);
+
+        return Inertia::render('Receipts/Print', [
+            'receipt' => $this->receiptForFrontend($salePayment),
+        ]);
+    }
+
+    private function receiptForFrontend(
+        SalePayment $payment
+    ): array {
+        $sale = $payment->sale;
+        $client = $sale?->client;
+
+        return [
+            'id' => $payment->id,
+            'receipt_number' => $payment->receipt_number,
+
+            'payment_date' => $payment->payment_date?->format('Y-m-d'),
+
+            'amount' => $payment->amount,
+
+            'payment_method' => $payment->payment_method,
+
+            'reference' => $payment->reference,
+
+            'notes' => $payment->notes,
+
+            'received_by' => $payment->receiver?->name,
+
+            'sale' => [
+                'id' => $sale?->id,
+                'sale_number' => $sale?->sale_number,
+                'sale_date' => $sale?->sale_date?->format('Y-m-d'),
+                'total' => $sale?->total,
+                'status' => $sale?->status,
+            ],
+
+            'client' => [
+                'code' => $client?->client_code,
+                'name' => $client?->display_name,
+                'identity_number' => $client?->identity_number,
+                'rtn' => $client?->rtn,
+                'phone' => $client?->phone,
+                'email' => $client?->email,
+                'address' => $client?->address,
+            ],
+        ];
+    }
+}
+
+================ ACCOUNTS RECEIVABLE CONTROLLER ================
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\FinancialAccount;
+use App\Models\Sale;
+use App\Models\SalePayment;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class AccountsReceivableController extends Controller
+{
+    public function index(): Response
+    {
+        $sales = Sale::query()
+            ->with([
+                'client',
+                'payments',
+            ])
+            ->whereNotIn('status', [
+                'paid',
+                'cancelled',
+            ])
+            ->latest('sale_date')
+            ->latest('id')
+            ->get()
+            ->filter(
+                fn (Sale $sale) =>
+                    $sale->balance > 0
+            )
+            ->map(fn (Sale $sale) => [
+                'id' =>
+                    $sale->id,
+
+                'sale_number' =>
+                    $sale->sale_number,
+
+                'client' =>
+                    $sale->client
+                        ?->display_name
+                    ?? 'Sin cliente',
+
+                'client_code' =>
+                    $sale->client
+                        ?->client_code,
+
+                'sale_date' =>
+                    $sale->sale_date
+                        ?->format('Y-m-d'),
+
+                'status' =>
+                    $sale->status,
+
+                'total' =>
+                    $sale->total,
+
+                'paid_amount' =>
+                    $sale->paid_amount,
+
+                'balance' =>
+                    $sale->balance,
+
+                'days_outstanding' =>
+                    $sale->sale_date
+                        ? $sale
+                            ->sale_date
+                            ->diffInDays(
+                                now()
+                            )
+                        : 0,
+            ])
+            ->values();
+
+        return Inertia::render(
+            'AccountsReceivable/Index',
+            [
+                'accounts' =>
+                    $sales,
+            ]
+        );
+    }
+
+    public function show(
+        Sale $sale
+    ): Response {
+        $sale->load([
+            'client',
+            'items',
+            'payments.financialAccount',
+        ]);
+
+        return Inertia::render(
+            'AccountsReceivable/Show',
+            [
+                'account' => [
+                    'id' =>
+                        $sale->id,
+
+                    'sale_number' =>
+                        $sale->sale_number,
+
+                    'sale_date' =>
+                        $sale->sale_date
+                            ?->format('Y-m-d'),
+
+                    'status' =>
+                        $sale->status,
+
+                    'subtotal' =>
+                        $sale->subtotal,
+
+                    'discount' =>
+                        $sale->discount,
+
+                    'total' =>
+                        $sale->total,
+
+                    'paid_amount' =>
+                        $sale->paid_amount,
+
+                    'balance' =>
+                        $sale->balance,
+
+                    'days_outstanding' =>
+                        $sale->sale_date
+                            ? $sale
+                                ->sale_date
+                                ->diffInDays(
+                                    now()
+                                )
+                            : 0,
+
+                    'notes' =>
+                        $sale->notes,
+
+                    'client' => [
+                        'id' =>
+                            $sale->client?->id,
+
+                        'code' =>
+                            $sale->client
+                                ?->client_code,
+
+                        'name' =>
+                            $sale->client
+                                ?->display_name,
+
+                        'phone' =>
+                            $sale->client
+                                ?->phone,
+
+                        'email' =>
+                            $sale->client
+                                ?->email,
+
+                        'address' =>
+                            $sale->client
+                                ?->address,
+                    ],
+
+                    'items' =>
+                        $sale->items
+                            ->map(
+                                fn ($item) => [
+                                    'id' =>
+                                        $item->id,
+
+                                    'item_name' =>
+                                        $item
+                                            ->item_name,
+
+                                    'quantity' =>
+                                        $item
+                                            ->quantity,
+
+                                    'subtotal' =>
+                                        $item
+                                            ->subtotal,
+                                ]
+                            )
+                            ->values(),
+
+                    'payments' =>
+                        $sale->payments
+                            ->map(
+                                fn (
+                                    SalePayment $payment
+                                ) => [
+                                    'id' =>
+                                        $payment->id,
+
+                                    'receipt_number' =>
+                                        $payment
+                                            ->receipt_number,
+
+                                    'payment_date' =>
+                                        $payment
+                                            ->payment_date
+                                            ?->format(
+                                                'Y-m-d'
+                                            ),
+
+                                    'amount' =>
+                                        $payment
+                                            ->amount,
+
+                                    'payment_method' =>
+                                        $payment
+                                            ->payment_method,
+
+                                    'financial_account' =>
+                                        $payment
+                                            ->financialAccount
+                                            ?->name,
+
+                                    'reference' =>
+                                        $payment
+                                            ->reference,
+
+                                    'notes' =>
+                                        $payment
+                                            ->notes,
+                                ]
+                            )
+                            ->values(),
+                ],
+
+                'financialAccounts' =>
+                    $this
+                        ->financialAccountsForForm(),
+            ]
+        );
+    }
+
+    public function storePayment(
+        Request $request,
+        Sale $sale
+    ): RedirectResponse {
+        $sale->load('payments');
+
+        if (
+            $sale->status ===
+            'cancelled'
+        ) {
+            return back()->withErrors([
+                'amount' =>
+                    'No se pueden registrar pagos en una venta cancelada.',
+            ]);
+        }
+
+        if (
+            $sale->balance <= 0
+        ) {
+            return back()->withErrors([
+                'amount' =>
+                    'Esta cuenta ya está pagada completamente.',
+            ]);
+        }
+
+        $validated =
+            $request->validate([
+                'payment_date' => [
+                    'required',
+                    'date',
+                ],
+
+                'amount' => [
+                    'required',
+                    'numeric',
+                    'gt:0',
+                ],
+
+                'payment_method' => [
+                    'required',
+
+                    Rule::in([
+                        'cash',
+                        'transfer',
+                        'card',
+                        'other',
+                    ]),
+                ],
+
+                'financial_account_id' => [
+                    Rule::requiredIf(
+                        fn () =>
+                            $request
+                                ->payment_method
+                            !== 'cash'
+                    ),
+
+                    'nullable',
+                    'integer',
+
+                    Rule::exists(
+                        'financial_accounts',
+                        'id'
+                    )->where(
+                        fn ($query) =>
+                            $query
+                                ->where(
+                                    'active',
+                                    true
+                                )
+                                ->whereNull(
+                                    'deleted_at'
+                                )
+                    ),
+                ],
+
+                'reference' => [
+                    'nullable',
+                    'string',
+                    'max:150',
+                ],
+
+                'notes' => [
+                    'nullable',
+                    'string',
+                ],
+            ]);
+
+        $amount = round(
+            (float)
+            $validated['amount'],
+            2
+        );
+
+        if (
+            $amount >
+            $sale->balance
+        ) {
+            return back()->withErrors([
+                'amount' =>
+                    'El abono no puede superar el saldo pendiente de L ' .
+                    number_format(
+                        $sale->balance,
+                        2
+                    ) .
+                    '.',
+            ]);
+        }
+
+        DB::transaction(
+            function () use (
+                $sale,
+                $validated,
+                $amount,
+                $request
+            ) {
+                SalePayment::create([
+                    'receipt_number' =>
+                        $this
+                            ->nextReceiptNumber(),
+
+                    'sale_id' =>
+                        $sale->id,
+
+                    'financial_account_id' =>
+                        $validated[
+                            'payment_method'
+                        ] === 'cash'
+                            ? null
+                            : (
+                                $validated[
+                                    'financial_account_id'
+                                ] ?? null
+                            ),
+
+                    'received_by' =>
+                        $request
+                            ->user()?->id,
+
+                    'payment_date' =>
+                        $validated[
+                            'payment_date'
+                        ],
+
+                    'amount' =>
+                        $amount,
+
+                    'payment_method' =>
+                        $validated[
+                            'payment_method'
+                        ],
+
+                    'reference' =>
+                        $validated[
+                            'reference'
+                        ] ?? null,
+
+                    'notes' =>
+                        $validated[
+                            'notes'
+                        ] ?? null,
+                ]);
+
+                $this
+                    ->refreshSaleStatus(
+                        $sale
+                    );
+            }
+        );
+
+        return back()->with(
+            'success',
+            'Abono registrado correctamente.'
+        );
+    }
+
+    private function refreshSaleStatus(
+        Sale $sale
+    ): void {
+        $sale->load('payments');
+
+        if (
+            $sale->status ===
+            'cancelled'
+        ) {
+            return;
+        }
+
+        $paid =
+            (float)
+            $sale->paid_amount;
+
+        $total =
+            (float)
+            $sale->total;
+
+        if ($paid <= 0) {
+            $status = 'pending';
+        } elseif (
+            $paid < $total
+        ) {
+            $status = 'partial';
+        } else {
+            $status = 'paid';
+        }
+
+        $sale->update([
+            'status' =>
+                $status,
+        ]);
+    }
+
+    private function nextReceiptNumber(): string
+    {
+        $next =
+            (SalePayment::withTrashed()
+                ->max('id') ?? 0)
+            + 1;
+
+        return 'REC-' .
+            now()->format('Y') .
+            '-' .
+            str_pad(
+                (string) $next,
+                4,
+                '0',
+                STR_PAD_LEFT
+            );
+    }
+
+    private function financialAccountsForForm(): array
+    {
+        return FinancialAccount::query()
+            ->active()
+            ->orderBy('name')
+            ->get()
+            ->map(
+                fn (
+                    FinancialAccount $account
+                ) => [
+                    'id' =>
+                        $account->id,
+
+                    'code' =>
+                        $account
+                            ->account_code,
+
+                    'name' =>
+                        $account->name,
+
+                    'institution' =>
+                        $account
+                            ->institution,
+
+                    'account_type' =>
+                        $account
+                            ->account_type,
+                ]
+            )
+            ->values()
+            ->all();
+    }
+}
+
+================ QUOTATIONS SHOW ================
+<script setup lang="ts">
+import AppLayout from '@/layouts/AppLayout.vue';
+import { Head, Link, router } from '@inertiajs/vue3';
+import {
+    Pencil,
+    Printer,
+    ShoppingCart,
+} from '@lucide/vue';
+
+const props = defineProps<{
+    quotation: any;
+}>();
+
+const breadcrumbs = [
+    {
+        title: 'Cotizaciones',
+        href: '/quotations',
+    },
+    {
+        title: props.quotation.quotation_number,
+        href: `/quotations/${props.quotation.id}`,
+    },
+];
+
+const money = (value: string | number) =>
+    `L ${Number(value).toLocaleString('es-HN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+
+const statusLabel = (status: string) => {
+    const labels: Record<string, string> = {
+        draft: 'Borrador',
+        sent: 'Enviada',
+        approved: 'Aprobada',
+        rejected: 'Rechazada',
+        expired: 'Vencida',
+    };
+
+    return labels[status] ?? status;
+};
+
+const changeStatus = (event: Event) => {
+    const status = (event.target as HTMLSelectElement).value;
+
+    router.patch(
+        `/quotations/${props.quotation.id}/status`,
+        { status },
+        {
+            preserveScroll: true,
+        },
+    );
+};
+
+const convertToSale = () => {
+    if (
+        confirm(
+            '¿Deseas convertir esta cotización aprobada en una venta?',
+        )
+    ) {
+        router.post(
+            `/quotations/${props.quotation.id}/convert-to-sale`,
+        );
+    }
+};
+
+const printQuotation = () => {
+    window.print();
+};
+</script>
+
+<template>
+    <Head :title="quotation.quotation_number" />
+
+    <AppLayout :breadcrumbs="breadcrumbs">
+        <div class="flex flex-1 flex-col gap-6 p-6">
+            <div
+                class="flex flex-col gap-4 print:hidden md:flex-row md:items-center md:justify-between"
+            >
+                <div>
+                    <h1 class="text-2xl font-bold">
+                        {{ quotation.quotation_number }}
+                    </h1>
+
+                    <p class="text-sm text-muted-foreground">
+                        Cotización para {{ quotation.client }}
+                    </p>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                    <select
+                        :value="quotation.status"
+                        @change="changeStatus"
+                        class="rounded-lg border bg-background px-4 py-2.5 text-sm"
+                    >
+                        <option value="draft">Borrador</option>
+                        <option value="sent">Enviada</option>
+                        <option value="approved">Aprobada</option>
+                        <option value="rejected">Rechazada</option>
+                        <option value="expired">Vencida</option>
+                    </select>
+
+                    <button
+                        v-if="quotation.status === 'approved'"
+                        type="button"
+                        @click="convertToSale"
+                        class="inline-flex items-center gap-2 rounded-lg bg-[#e84657] px-4 py-2.5 text-sm font-semibold text-white"
+                    >
+                        <ShoppingCart class="h-4 w-4" />
+                        Convertir en venta
+                    </button>
+
+                    <Link
+                        :href="`/quotations/${quotation.id}/edit`"
+                        class="inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold"
+                    >
+                        <Pencil class="h-4 w-4" />
+                        Editar
+                    </Link>
+
+                    <button
+                        type="button"
+                        @click="printQuotation"
+                        class="inline-flex items-center gap-2 rounded-lg bg-[#0fa7b4] px-4 py-2.5 text-sm font-semibold text-white"
+                    >
+                        <Printer class="h-4 w-4" />
+                        Imprimir
+                    </button>
+                </div>
+            </div>
+
+            <div class="rounded-xl border bg-background p-8 shadow-sm">
+                <div class="mb-8 flex justify-between gap-8">
+                    <div>
+                        <h2 class="text-2xl font-bold">
+                            ADN Publicidad
+                        </h2>
+
+                        <p class="mt-1 text-sm text-muted-foreground">
+                            Cotización
+                        </p>
+                    </div>
+
+                    <div class="text-right">
+                        <p class="font-bold">
+                            {{ quotation.quotation_number }}
+                        </p>
+
+                        <p class="text-sm">
+                            Fecha: {{ quotation.quotation_date }}
+                        </p>
+
+                        <p
+                            v-if="quotation.valid_until"
+                            class="text-sm"
+                        >
+                            Válida hasta:
+                            {{ quotation.valid_until }}
+                        </p>
+
+                        <p class="mt-1 text-sm font-semibold">
+                            {{ statusLabel(quotation.status) }}
+                        </p>
+                    </div>
+                </div>
+
+                <div class="mb-8 rounded-lg bg-muted/40 p-4">
+                    <p class="text-xs uppercase text-muted-foreground">
+                        Cliente
+                    </p>
+
+                    <p class="mt-1 text-lg font-semibold">
+                        {{ quotation.client }}
+                    </p>
+
+                    <p class="text-sm text-muted-foreground">
+                        {{ quotation.client_code }}
+                    </p>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="border-b">
+                            <tr>
+                                <th class="py-3 text-left">
+                                    Descripción
+                                </th>
+
+                                <th class="py-3 text-right">
+                                    Cantidad
+                                </th>
+
+                                <th class="py-3 text-right">
+                                    Medida
+                                </th>
+
+                                <th class="py-3 text-right">
+                                    Total
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <tr
+                                v-for="item in quotation.items"
+                                :key="item.id"
+                                class="border-b"
+                            >
+                                <td class="py-4">
+                                    <p class="font-semibold">
+                                        {{ item.item_name }}
+                                    </p>
+
+                                    <p
+                                        v-if="item.description"
+                                        class="text-xs text-muted-foreground"
+                                    >
+                                        {{ item.description }}
+                                    </p>
+                                </td>
+
+                                <td class="py-4 text-right">
+                                    {{ Number(item.quantity) }}
+                                </td>
+
+                                <td class="py-4 text-right">
+                                    <span
+                                        v-if="item.pricing_method === 'AREA'"
+                                    >
+                                        {{ Number(item.width) }}
+                                        ×
+                                        {{ Number(item.height) }}
+                                        {{ item.measurement_unit }}
+                                    </span>
+
+                                    <span
+                                        v-else-if="
+                                            item.pricing_method === 'LINEAR'
+                                        "
+                                    >
+                                        {{ Number(item.width) }}
+                                        {{ item.measurement_unit }}
+                                    </span>
+
+                                    <span v-else>—</span>
+                                </td>
+
+                                <td class="py-4 text-right font-semibold">
+                                    {{ money(item.subtotal) }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="ml-auto mt-8 max-w-sm space-y-3">
+                    <div class="flex justify-between">
+                        <span>Subtotal</span>
+                        <span>{{ money(quotation.subtotal) }}</span>
+                    </div>
+
+                    <div class="flex justify-between">
+                        <span>Descuento</span>
+                        <span>{{ money(quotation.discount) }}</span>
+                    </div>
+
+                    <div class="flex justify-between border-t pt-4 text-xl font-bold">
+                        <span>Total</span>
+
+                        <span class="text-[#0fa7b4]">
+                            {{ money(quotation.total) }}
+                        </span>
+                    </div>
+                </div>
+
+                <div
+                    v-if="quotation.notes"
+                    class="mt-8 border-t pt-6"
+                >
+                    <h3 class="font-semibold">
+                        Notas
+                    </h3>
+
+                    <p class="mt-2 whitespace-pre-line text-sm text-muted-foreground">
+                        {{ quotation.notes }}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </AppLayout>
+</template>
+
+<style>
+@media print {
+    aside,
+    header,
+    nav {
+        display: none !important;
+    }
+
+    body {
+        background: white !important;
+    }
+}
+</style>
+
+================ QUOTATIONS INDEX ================
+<script setup lang="ts">
+import AppLayout from '@/layouts/AppLayout.vue';
+import { Head, Link } from '@inertiajs/vue3';
+import { Eye, Pencil } from '@lucide/vue';
+
+defineProps<{
+    quotations: any[];
+}>();
+
+const breadcrumbs = [
+    {
+        title: 'Cotizaciones',
+        href: '/quotations',
+    },
+];
+
+const money = (value: string | number) => {
+    return `L ${Number(value).toLocaleString('es-HN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+};
+
+const statusLabel = (status: string) => {
+    const labels: Record<string, string> = {
+        draft: 'Borrador',
+        sent: 'Enviada',
+        approved: 'Aprobada',
+        rejected: 'Rechazada',
+        expired: 'Vencida',
+    };
+
+    return labels[status] ?? status;
+};
+
+const statusClass = (status: string) => {
+    const classes: Record<string, string> = {
+        draft: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200',
+        sent: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+        approved:
+            'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+        rejected:
+            'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+        expired:
+            'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+    };
+
+    return classes[status] ?? classes.draft;
+};
+</script>
+
+<template>
+    <Head title="Cotizaciones" />
+
+    <AppLayout :breadcrumbs="breadcrumbs">
+        <div class="flex flex-1 flex-col gap-6 p-6">
+            <div
+                class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+            >
+                <div>
+                    <h1 class="text-2xl font-bold">
+                        Cotizaciones
+                    </h1>
+
+                    <p class="text-sm text-muted-foreground">
+                        Gestiona las cotizaciones de ADN Publicidad.
+                    </p>
+                </div>
+
+                <Link
+                    href="/quotations/create"
+                    class="inline-flex items-center justify-center rounded-lg bg-[#0fa7b4] px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                    Nueva cotización
+                </Link>
+            </div>
+
+            <div class="overflow-hidden rounded-xl border bg-background shadow-sm">
+                <div
+                    v-if="quotations.length === 0"
+                    class="flex min-h-64 items-center justify-center p-8 text-center"
+                >
+                    <div>
+                        <h2 class="text-lg font-semibold">
+                            No hay cotizaciones
+                        </h2>
+
+                        <p class="mt-2 text-sm text-muted-foreground">
+                            Crea la primera cotización.
+                        </p>
+                    </div>
+                </div>
+
+                <div v-else class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="border-b bg-muted/50">
+                            <tr>
+                                <th class="px-5 py-4">Número</th>
+                                <th class="px-5 py-4">Cliente</th>
+                                <th class="px-5 py-4">Fecha</th>
+                                <th class="px-5 py-4">Válida hasta</th>
+                                <th class="px-5 py-4">Estado</th>
+                                <th class="px-5 py-4">Total</th>
+                                <th class="px-5 py-4 text-right">
+                                    Acciones
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <tr
+                                v-for="quotation in quotations"
+                                :key="quotation.id"
+                                class="border-b last:border-b-0 hover:bg-muted/30"
+                            >
+                                <td class="px-5 py-4 font-semibold">
+                                    {{ quotation.quotation_number }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ quotation.client }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ quotation.quotation_date }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ quotation.valid_until || '—' }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    <span
+                                        class="rounded-full px-3 py-1 text-xs font-semibold"
+                                        :class="statusClass(quotation.status)"
+                                    >
+                                        {{ statusLabel(quotation.status) }}
+                                    </span>
+                                </td>
+
+                                <td class="px-5 py-4 font-semibold">
+                                    {{ money(quotation.total) }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    <div class="flex justify-end gap-2">
+                                        <Link
+                                            :href="`/quotations/${quotation.id}`"
+                                            class="inline-flex items-center gap-2 rounded-lg border px-3 py-2"
+                                        >
+                                            <Eye class="h-4 w-4" />
+                                            Ver
+                                        </Link>
+
+                                        <Link
+                                            :href="`/quotations/${quotation.id}/edit`"
+                                            class="inline-flex items-center gap-2 rounded-lg border px-3 py-2"
+                                        >
+                                            <Pencil class="h-4 w-4" />
+                                            Editar
+                                        </Link>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </AppLayout>
+</template>
+
+================ RECEIPTS INDEX ================
+<script setup lang="ts">
+import AppLayout from '@/layouts/AppLayout.vue';
+import { Head, Link } from '@inertiajs/vue3';
+import {
+    Eye,
+    Printer,
+    ReceiptText,
+    Search,
+} from '@lucide/vue';
+import { computed, ref } from 'vue';
+
+type Receipt = {
+    id: number;
+    receipt_number: string;
+    sale_id: number;
+    sale_number: string | null;
+    client: string;
+    payment_date: string | null;
+    amount: string | number;
+    payment_method: string;
+    reference: string | null;
+};
+
+const props = defineProps<{
+    receipts: Receipt[];
+}>();
+
+const search = ref('');
+
+const breadcrumbs = [
+    {
+        title: 'Recibos',
+        href: '/receipts',
+    },
+];
+
+const filteredReceipts = computed(() => {
+    const term = search.value
+        .trim()
+        .toLowerCase();
+
+    if (!term) {
+        return props.receipts;
+    }
+
+    return props.receipts.filter((receipt) => {
+        return [
+            receipt.receipt_number,
+            receipt.sale_number ?? '',
+            receipt.client,
+            receipt.reference ?? '',
+        ].some((value) =>
+            value.toLowerCase().includes(term),
+        );
+    });
+});
+
+const totalReceived = computed(() => {
+    return props.receipts.reduce(
+        (total, receipt) =>
+            total + Number(receipt.amount || 0),
+        0,
+    );
+});
+
+const money = (value: string | number) => {
+    return `L ${Number(value).toLocaleString('es-HN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+};
+
+const paymentMethodLabel = (method: string) => {
+    const labels: Record<string, string> = {
+        cash: 'Efectivo',
+        transfer: 'Transferencia',
+        card: 'Tarjeta',
+        other: 'Otro',
+    };
+
+    return labels[method] ?? method;
+};
+</script>
+
+<template>
+    <Head title="Recibos" />
+
+    <AppLayout :breadcrumbs="breadcrumbs">
+        <div class="flex flex-1 flex-col gap-6 p-6">
+            <div>
+                <h1 class="text-2xl font-bold">
+                    Recibos
+                </h1>
+
+                <p class="text-sm text-muted-foreground">
+                    Consulta los comprobantes de pagos recibidos.
+                </p>
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2">
+                <div
+                    class="rounded-xl border bg-background p-5 shadow-sm"
+                >
+                    <div class="flex items-center gap-4">
+                        <div
+                            class="flex h-11 w-11 items-center justify-center rounded-xl bg-[#0fa7b4]/10 text-[#0fa7b4]"
+                        >
+                            <ReceiptText class="h-5 w-5" />
+                        </div>
+
+                        <div>
+                            <p
+                                class="text-sm text-muted-foreground"
+                            >
+                                Recibos emitidos
+                            </p>
+
+                            <p class="text-2xl font-bold">
+                                {{ receipts.length }}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    class="rounded-xl border bg-background p-5 shadow-sm"
+                >
+                    <p class="text-sm text-muted-foreground">
+                        Total recibido
+                    </p>
+
+                    <p
+                        class="mt-1 text-2xl font-bold text-[#0fa7b4]"
+                    >
+                        {{ money(totalReceived) }}
+                    </p>
+                </div>
+            </div>
+
+            <div
+                class="rounded-xl border bg-background shadow-sm"
+            >
+                <div
+                    class="flex flex-col gap-4 border-b p-5 md:flex-row md:items-center md:justify-between"
+                >
+                    <div>
+                        <h2 class="font-semibold">
+                            Historial de recibos
+                        </h2>
+
+                        <p
+                            class="text-sm text-muted-foreground"
+                        >
+                            Un recibo corresponde a un pago
+                            efectivamente recibido.
+                        </p>
+                    </div>
+
+                    <div class="relative w-full md:w-80">
+                        <Search
+                            class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                        />
+
+                        <input
+                            v-model="search"
+                            type="text"
+                            placeholder="Buscar recibo o cliente..."
+                            class="w-full rounded-lg border bg-background py-2.5 pl-10 pr-4 outline-none transition focus:border-[#0fa7b4] focus:ring-2 focus:ring-[#0fa7b4]/20"
+                        />
+                    </div>
+                </div>
+
+                <div
+                    v-if="filteredReceipts.length === 0"
+                    class="flex min-h-64 items-center justify-center p-8 text-center"
+                >
+                    <div>
+                        <ReceiptText
+                            class="mx-auto h-10 w-10 text-muted-foreground"
+                        />
+
+                        <h3 class="mt-4 font-semibold">
+                            No hay recibos
+                        </h3>
+
+                        <p
+                            class="mt-1 text-sm text-muted-foreground"
+                        >
+                            Los recibos aparecerán cuando se
+                            registren pagos de ventas.
+                        </p>
+                    </div>
+                </div>
+
+                <div v-else class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="border-b bg-muted/50">
+                            <tr>
+                                <th class="px-5 py-4">
+                                    Recibo
+                                </th>
+
+                                <th class="px-5 py-4">
+                                    Fecha
+                                </th>
+
+                                <th class="px-5 py-4">
+                                    Cliente
+                                </th>
+
+                                <th class="px-5 py-4">
+                                    Venta
+                                </th>
+
+                                <th class="px-5 py-4">
+                                    Método
+                                </th>
+
+                                <th class="px-5 py-4">
+                                    Referencia
+                                </th>
+
+                                <th
+                                    class="px-5 py-4 text-right"
+                                >
+                                    Monto
+                                </th>
+
+                                <th
+                                    class="px-5 py-4 text-right"
+                                >
+                                    Acciones
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <tr
+                                v-for="receipt in filteredReceipts"
+                                :key="receipt.id"
+                                class="border-b last:border-b-0 hover:bg-muted/30"
+                            >
+                                <td
+                                    class="px-5 py-4 font-semibold"
+                                >
+                                    {{
+                                        receipt.receipt_number
+                                    }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{
+                                        receipt.payment_date ||
+                                        '—'
+                                    }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ receipt.client }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{
+                                        receipt.sale_number ||
+                                        '—'
+                                    }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{
+                                        paymentMethodLabel(
+                                            receipt.payment_method,
+                                        )
+                                    }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{
+                                        receipt.reference ||
+                                        '—'
+                                    }}
+                                </td>
+
+                                <td
+                                    class="px-5 py-4 text-right font-bold text-emerald-600"
+                                >
+                                    {{
+                                        money(
+                                            receipt.amount,
+                                        )
+                                    }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    <div
+                                        class="flex justify-end gap-2"
+                                    >
+                                        <Link
+                                            :href="`/receipts/${receipt.id}`"
+                                            class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 transition hover:border-[#0fa7b4] hover:text-[#0fa7b4]"
+                                        >
+                                            <Eye
+                                                class="h-4 w-4"
+                                            />
+
+                                            Ver
+                                        </Link>
+
+                                        <Link
+                                            :href="`/receipts/${receipt.id}/print`"
+                                            class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 transition hover:border-[#0fa7b4] hover:text-[#0fa7b4]"
+                                        >
+                                            <Printer
+                                                class="h-4 w-4"
+                                            />
+                                        </Link>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </AppLayout>
+</template>
+
+================ RECEIPTS SHOW ================
+<script setup lang="ts">
+import AppLayout from '@/layouts/AppLayout.vue';
+import { Head, Link } from '@inertiajs/vue3';
+import {
+    ArrowLeft,
+    ExternalLink,
+    Printer,
+} from '@lucide/vue';
+
+const props = defineProps<{
+    receipt: any;
+}>();
+
+const breadcrumbs = [
+    {
+        title: 'Recibos',
+        href: '/receipts',
+    },
+    {
+        title: props.receipt.receipt_number,
+        href: `/receipts/${props.receipt.id}`,
+    },
+];
+
+const money = (value: string | number) => {
+    return `L ${Number(value).toLocaleString('es-HN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+};
+
+const paymentMethodLabel = (method: string) => {
+    const labels: Record<string, string> = {
+        cash: 'Efectivo',
+        transfer: 'Transferencia',
+        card: 'Tarjeta',
+        other: 'Otro',
+    };
+
+    return labels[method] ?? method;
+};
+</script>
+
+<template>
+    <Head :title="receipt.receipt_number" />
+
+    <AppLayout :breadcrumbs="breadcrumbs">
+        <div class="flex flex-1 flex-col gap-6 p-6">
+            <div
+                class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+            >
+                <div>
+                    <h1 class="text-2xl font-bold">
+                        {{ receipt.receipt_number }}
+                    </h1>
+
+                    <p
+                        class="text-sm text-muted-foreground"
+                    >
+                        Recibo de venta
+                    </p>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                    <Link
+                        href="/receipts"
+                        class="inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold"
+                    >
+                        <ArrowLeft class="h-4 w-4" />
+
+                        Volver
+                    </Link>
+
+                    <Link
+                        :href="`/receipts/${receipt.id}/print`"
+                        class="inline-flex items-center gap-2 rounded-lg bg-[#0fa7b4] px-4 py-2.5 text-sm font-semibold text-white"
+                    >
+                        <Printer class="h-4 w-4" />
+
+                        Imprimir
+                    </Link>
+                </div>
+            </div>
+
+            <div
+                class="mx-auto w-full max-w-4xl rounded-2xl border bg-background p-8 shadow-sm"
+            >
+                <div
+                    class="flex flex-col gap-6 border-b pb-8 md:flex-row md:items-start md:justify-between"
+                >
+                    <div>
+                        <p
+                            class="text-sm font-semibold uppercase tracking-wider text-[#0fa7b4]"
+                        >
+                            ADN Publicidad
+                        </p>
+
+                        <h2
+                            class="mt-2 text-3xl font-bold"
+                        >
+                            Recibo de venta
+                        </h2>
+
+                        <p
+                            class="mt-2 text-sm text-muted-foreground"
+                        >
+                            Documento no fiscal
+                        </p>
+                    </div>
+
+                    <div class="md:text-right">
+                        <p
+                            class="text-xl font-bold text-[#e84657]"
+                        >
+                            {{
+                                receipt.receipt_number
+                            }}
+                        </p>
+
+                        <p class="mt-2 text-sm">
+                            Fecha:
+                            {{
+                                receipt.payment_date
+                            }}
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    class="grid gap-6 border-b py-8 md:grid-cols-2"
+                >
+                    <div>
+                        <p
+                            class="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        >
+                            Recibimos de
+                        </p>
+
+                        <p
+                            class="mt-2 text-xl font-bold"
+                        >
+                            {{
+                                receipt.client.name ||
+                                'Cliente'
+                            }}
+                        </p>
+
+                        <div
+                            class="mt-3 space-y-1 text-sm text-muted-foreground"
+                        >
+                            <p
+                                v-if="
+                                    receipt.client.code
+                                "
+                            >
+                                Código:
+                                {{
+                                    receipt.client.code
+                                }}
+                            </p>
+
+                            <p
+                                v-if="
+                                    receipt.client.identity_number
+                                "
+                            >
+                                Identidad:
+                                {{
+                                    receipt.client
+                                        .identity_number
+                                }}
+                            </p>
+
+                            <p
+                                v-if="receipt.client.rtn"
+                            >
+                                RTN:
+                                {{
+                                    receipt.client.rtn
+                                }}
+                            </p>
+
+                            <p
+                                v-if="
+                                    receipt.client.phone
+                                "
+                            >
+                                Teléfono:
+                                {{
+                                    receipt.client.phone
+                                }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div>
+                        <p
+                            class="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        >
+                            Por concepto de
+                        </p>
+
+                        <p
+                            class="mt-2 text-lg font-semibold"
+                        >
+                            Pago correspondiente a
+                            {{
+                                receipt.sale
+                                    .sale_number
+                            }}
+                        </p>
+
+                        <Link
+                            v-if="receipt.sale.id"
+                            :href="`/sales/${receipt.sale.id}`"
+                            class="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-[#0fa7b4]"
+                        >
+                            Ver venta
+
+                            <ExternalLink
+                                class="h-4 w-4"
+                            />
+                        </Link>
+                    </div>
+                </div>
+
+                <div
+                    class="grid gap-6 border-b py-8 md:grid-cols-2"
+                >
+                    <div>
+                        <p
+                            class="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        >
+                            Forma de pago
+                        </p>
+
+                        <p
+                            class="mt-2 text-lg font-semibold"
+                        >
+                            {{
+                                paymentMethodLabel(
+                                    receipt.payment_method,
+                                )
+                            }}
+                        </p>
+
+                        <p
+                            v-if="receipt.reference"
+                            class="mt-1 text-sm text-muted-foreground"
+                        >
+                            Referencia:
+                            {{
+                                receipt.reference
+                            }}
+                        </p>
+                    </div>
+
+                    <div class="md:text-right">
+                        <p
+                            class="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        >
+                            Monto recibido
+                        </p>
+
+                        <p
+                            class="mt-2 text-4xl font-bold text-[#0fa7b4]"
+                        >
+                            {{
+                                money(
+                                    receipt.amount,
+                                )
+                            }}
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    v-if="receipt.notes"
+                    class="border-b py-8"
+                >
+                    <p
+                        class="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
+                        Observaciones
+                    </p>
+
+                    <p
+                        class="mt-2 whitespace-pre-line text-sm"
+                    >
+                        {{ receipt.notes }}
+                    </p>
+                </div>
+
+                <div
+                    class="flex flex-col gap-6 pt-8 md:flex-row md:items-end md:justify-between"
+                >
+                    <div
+                        class="text-sm text-muted-foreground"
+                    >
+                        <p
+                            v-if="receipt.received_by"
+                        >
+                            Recibido por:
+                            {{
+                                receipt.received_by
+                            }}
+                        </p>
+
+                        <p>
+                            ADN Publicidad
+                        </p>
+                    </div>
+
+                    <div
+                        class="w-full max-w-xs border-t pt-2 text-center text-sm"
+                    >
+                        Firma / sello
+                    </div>
+                </div>
+            </div>
+        </div>
+    </AppLayout>
+</template>
+
+================ ROUTES RELACIONADAS ================
+
+  GET|HEAD  accounts-receivable ................................................................................. accounts-receivable.index �Ǧ 
+AccountsReceivableController@index
+  GET|HEAD  accounts-receivable/{sale} ............................................................................ accounts-receivable.show �Ǧ 
+AccountsReceivableController@show
+  POST      accounts-receivable/{sale}/payments ................................................. accounts-receivable.payments.store �Ǧ 
+AccountsReceivableController@storePayment
+  GET|HEAD  quotations ............................................................................................................ quotations.index �Ǧ 
+QuotationController@index
+  POST      quotations ............................................................................................................ quotations.store �Ǧ 
+QuotationController@store
+  GET|HEAD  quotations/create ................................................................................................... quotations.create �Ǧ 
+QuotationController@create
+  GET|HEAD  quotations/{quotation} .................................................................................................. quotations.show �Ǧ 
+QuotationController@show
+  PATCH     quotations/{quotation} .............................................................................................. quotations.update �Ǧ 
+QuotationController@update
+  POST      quotations/{quotation}/convert-to-sale ............................................................ quotations.convert-to-sale �Ǧ 
+SaleController@convertFromQuotation
+  GET|HEAD  quotations/{quotation}/edit ............................................................................................. quotations.edit �Ǧ 
+QuotationController@edit
+  GET|HEAD  quotations/{quotation}/pdf ................................................................................... quotations.pdf �Ǧ 
+BusinessDocumentController@quotation
+  GET|HEAD  quotations/{quotation}/share .................................................................................. quotations.share �Ǧ 
+DocumentShareController@quotation
+  PATCH     quotations/{quotation}/status ................................................................................. quotations.status �Ǧ 
+QuotationController@updateStatus
+  GET|HEAD  receipts .................................................................................................................. receipts.index �Ǧ 
+ReceiptController@index
+  GET|HEAD  receipts/{payment}/pdf ........................................................................................... receipts.pdf �Ǧ 
+BusinessDocumentController@receipt
+  GET|HEAD  receipts/{payment}/share .......................................................................................... receipts.share �Ǧ 
+DocumentShareController@receipt
+  GET|HEAD  receipts/{salePayment} ...................................................................................................... receipts.show �Ǧ 
+ReceiptController@show
+  GET|HEAD  receipts/{salePayment}/print .............................................................................................. receipts.print �Ǧ 
+ReceiptController@print
+  GET|HEAD  sales ........................................................................................................................... sales.index �Ǧ 
+SaleController@index
+  POST      sales ........................................................................................................................... sales.store �Ǧ 
+SaleController@store
+  GET|HEAD  sales/create .................................................................................................................. sales.create �Ǧ 
+SaleController@create
+  GET|HEAD  sales/{sale} ...................................................................................................................... sales.show �Ǧ 
+SaleController@show
+  PATCH     sales/{sale}/cancel ........................................................................................................... sales.cancel �Ǧ 
+SaleController@cancel
+  POST      sales/{sale}/payments ............................................................................................. sales.payments.store �Ǧ 
+SaleController@addPayment
+
+
+

@@ -1,0 +1,198 @@
+/*
+|--------------------------------------------------------------------------
+| ADN PUBLICIDAD - EXPERIENCIA MÓVIL
+|--------------------------------------------------------------------------
+|
+| En móvil los listados se representan mediante tarjetas.
+| Las tablas permanecen como interfaz principal en escritorio.
+|
+*/
+
+@media (max-width: 767px) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | BASE
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-page-host {
+        width: 100%;
+        min-width: 0;
+
+        overflow-x: hidden;
+
+        background:
+            radial-gradient(
+                circle at 105% -5%,
+                rgba(15, 167, 180, 0.075),
+                transparent 20rem
+            ),
+            #070b0d;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ÁREA DEL MÓDULO
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-page-host
+    > div {
+        width: 100% !important;
+        max-width: none !important;
+
+        margin: 0 !important;
+
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        padding-top: 14px !important;
+        padding-bottom: 24px !important;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ENCABEZADOS
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-page-host h1 {
+        font-size: 1.45rem;
+        line-height: 1.1;
+
+        letter-spacing:
+            -0.025em;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | TARJETAS
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-mobile-record-card {
+        transform:
+            translateZ(0);
+
+        transition:
+            border-color 160ms ease,
+            background-color 160ms ease,
+            transform 120ms ease;
+    }
+
+    .adn-mobile-record-card:active {
+        transform:
+            scale(0.992);
+
+        border-color:
+            rgba(
+                15,
+                167,
+                180,
+                0.2
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | BOTONES
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-page-host button,
+    .adn-page-host a {
+        -webkit-tap-highlight-color:
+            transparent;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | INPUTS
+    |--------------------------------------------------------------------------
+    |
+    | 16px evita zoom automático en Safari móvil.
+    |
+    */
+
+    .adn-page-host
+    input:not([type="checkbox"]):not([type="radio"]),
+
+    .adn-page-host
+    select,
+
+    .adn-page-host
+    textarea {
+        min-height: 46px;
+
+        border-radius:
+            13px;
+
+        font-size:
+            16px;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DIÁLOGOS
+    |--------------------------------------------------------------------------
+    */
+
+    [role="dialog"] {
+        width:
+            calc(
+                100vw - 24px
+            ) !important;
+
+        max-width:
+            calc(
+                100vw - 24px
+            ) !important;
+
+        max-height:
+            calc(
+                100dvh - 24px
+            );
+
+        border-radius:
+            20px !important;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ESPACIADO
+    |--------------------------------------------------------------------------
+    */
+
+    .adn-page-host
+    .gap-6 {
+        gap:
+            1rem;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | TELÉFONOS MUY ESTRECHOS
+    |--------------------------------------------------------------------------
+    */
+
+    @media (max-width: 380px) {
+
+        .adn-page-host
+        > div {
+            padding-left:
+                9px !important;
+
+            padding-right:
+                9px !important;
+        }
+
+        .adn-mobile-record-card
+        > div:last-child {
+            padding-left:
+                13px;
+
+            padding-right:
+                13px;
+        }
+    }
+}

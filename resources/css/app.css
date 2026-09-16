@@ -62,13 +62,16 @@
 }
 
 /*
-  The default border color has changed to `currentColor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
-
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
+|--------------------------------------------------------------------------
+| TAILWIND V4 - COMPATIBILIDAD DE BORDES
+|--------------------------------------------------------------------------
+|
+| En Tailwind CSS v4 el color de borde predeterminado cambió a
+| currentColor. Este bloque mantiene la apariencia esperada de los
+| componentes que todavía dependen del comportamiento anterior.
+|
 */
+
 @layer base {
     *,
     ::after,
@@ -89,32 +92,49 @@
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| TEMA CLARO
+|--------------------------------------------------------------------------
+*/
+
 :root {
     --background: hsl(0 0% 100%);
     --foreground: hsl(0 0% 3.9%);
+
     --card: hsl(0 0% 100%);
     --card-foreground: hsl(0 0% 3.9%);
+
     --popover: hsl(0 0% 100%);
     --popover-foreground: hsl(0 0% 3.9%);
+
     --primary: hsl(0 0% 9%);
     --primary-foreground: hsl(0 0% 98%);
+
     --secondary: hsl(0 0% 92.1%);
     --secondary-foreground: hsl(0 0% 9%);
+
     --muted: hsl(0 0% 96.1%);
     --muted-foreground: hsl(0 0% 45.1%);
+
     --accent: hsl(0 0% 96.1%);
     --accent-foreground: hsl(0 0% 9%);
+
     --destructive: hsl(0 84.2% 60.2%);
     --destructive-foreground: hsl(0 0% 98%);
+
     --border: hsl(0 0% 92.8%);
     --input: hsl(0 0% 89.8%);
     --ring: hsl(0 0% 3.9%);
+
     --chart-1: hsl(12 76% 61%);
     --chart-2: hsl(173 58% 39%);
     --chart-3: hsl(197 37% 24%);
     --chart-4: hsl(43 74% 66%);
     --chart-5: hsl(27 87% 67%);
+
     --radius: 0.5rem;
+
     --sidebar-background: hsl(0 0% 98%);
     --sidebar-foreground: hsl(240 5.3% 26.1%);
     --sidebar-primary: hsl(0 0% 10%);
@@ -126,34 +146,52 @@
     --sidebar: hsl(0 0% 98%);
 }
 
+/*
+|--------------------------------------------------------------------------
+| TEMA OSCURO
+|--------------------------------------------------------------------------
+*/
+
 .dark {
+    color-scheme: dark;
+
     --background: hsl(0 0% 3.9%);
     --foreground: hsl(0 0% 98%);
+
     --card: hsl(0 0% 3.9%);
     --card-foreground: hsl(0 0% 98%);
+
     --popover: hsl(0 0% 3.9%);
     --popover-foreground: hsl(0 0% 98%);
+
     --primary: hsl(0 0% 98%);
     --primary-foreground: hsl(0 0% 9%);
+
     --secondary: hsl(0 0% 14.9%);
     --secondary-foreground: hsl(0 0% 98%);
+
     --muted: hsl(0 0% 16.08%);
     --muted-foreground: hsl(0 0% 63.9%);
+
     --accent: hsl(0 0% 14.9%);
     --accent-foreground: hsl(0 0% 98%);
+
     --destructive: hsl(0 84% 60%);
     --destructive-foreground: hsl(0 0% 98%);
+
     --border: hsl(0 0% 14.9%);
     --input: hsl(0 0% 14.9%);
     --ring: hsl(0 0% 83.1%);
+
     --chart-1: hsl(220 70% 50%);
     --chart-2: hsl(160 60% 45%);
     --chart-3: hsl(30 80% 55%);
     --chart-4: hsl(280 65% 60%);
     --chart-5: hsl(340 75% 55%);
+
     --sidebar-background: hsl(0 0% 7%);
     --sidebar-foreground: hsl(0 0% 95.9%);
-    --sidebar-primary: hsl(360, 100%, 100%);
+    --sidebar-primary: hsl(0 0% 100%);
     --sidebar-primary-foreground: hsl(0 0% 100%);
     --sidebar-accent: hsl(0 0% 15.9%);
     --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
@@ -162,11 +200,84 @@
     --sidebar: hsl(240 5.9% 10%);
 }
 
+/*
+|--------------------------------------------------------------------------
+| BASE
+|--------------------------------------------------------------------------
+*/
+
 @layer base {
     * {
         @apply border-border outline-ring/50;
     }
+
     body {
         @apply bg-background text-foreground;
     }
+}
+
+/*
+|--------------------------------------------------------------------------
+| ADN PUBLICIDAD - CONTROLES NATIVOS
+|--------------------------------------------------------------------------
+|
+| Windows / Edge / Chrome pueden dibujar <select> y <option> utilizando
+| colores propios del sistema operativo. Como ADN utiliza una interfaz
+| predominantemente oscura, indicamos explícitamente el esquema oscuro
+| y los colores de las opciones.
+|
+*/
+
+select {
+    color-scheme: dark;
+
+    background-color: #071014;
+    color: #f8fafc;
+}
+
+select option,
+select optgroup {
+    background-color: #071014 !important;
+    color: #f8fafc !important;
+}
+
+select option:checked {
+    background-color: #525252 !important;
+    color: #ffffff !important;
+}
+
+select option:disabled {
+    color: rgba(248, 250, 252, 0.35) !important;
+}
+
+select:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+/*
+|--------------------------------------------------------------------------
+| CAMPOS NATIVOS EN MODO OSCURO
+|--------------------------------------------------------------------------
+|
+| También ayuda a mantener coherencia en controles de fecha, hora,
+| número y otros widgets que el navegador renderiza nativamente.
+|
+*/
+
+.dark input,
+.dark textarea,
+.dark select {
+    color-scheme: dark;
+}
+
+/*
+|--------------------------------------------------------------------------
+| SELECCIÓN DE TEXTO
+|--------------------------------------------------------------------------
+*/
+
+::selection {
+    background: rgba(15, 167, 180, 0.35);
+    color: #ffffff;
 }

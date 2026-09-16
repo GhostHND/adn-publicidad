@@ -1,0 +1,1494 @@
+================ USER MODEL ================
+<?php
+
+namespace App\Models;
+
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Carbon;
+use Laravel\Fortify\Contracts\PasskeyUser;
+use Laravel\Fortify\PasskeyAuthenticatable;
+use Laravel\Fortify\TwoFactorAuthenticatable;
+
+/**
+ * @property int $id
+ * @property string $name
+ * @property string $email
+ * @property Carbon|null $email_verified_at
+ * @property string $password
+ * @property string|null $two_factor_secret
+ * @property string|null $two_factor_recovery_codes
+ * @property Carbon|null $two_factor_confirmed_at
+ * @property string|null $remember_token
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ */
+#[Fillable(['name', 'email', 'password'])]
+#[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
+class User extends Authenticatable implements PasskeyUser
+{
+    /** @use HasFactory<UserFactory> */
+    use HasFactory, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+            'two_factor_confirmed_at' => 'datetime',
+        ];
+    }
+}
+
+
+================ EMPLOYEE MODEL ================
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Employee extends Model
+{
+    use HasFactory, SoftDeletes;
+
+    protected $fillable = [
+        'employee_code',
+        'first_name',
+        'middle_name',
+        'last_name',
+        'second_last_name',
+        'identity_number',
+        'gender',
+        'birth_date',
+        'email',
+        'phone',
+        'alternate_phone',
+        'address',
+        'position',
+        'hire_date',
+        'notes',
+        'active',
+        'is_default_operator',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'birth_date' => 'date',
+            'hire_date' => 'date',
+            'active' => 'boolean',
+            'is_default_operator' => 'boolean',
+        ];
+    }
+
+    public function getFullNameAttribute(): string
+    {
+        return collect([
+            $this->first_name,
+            $this->middle_name,
+            $this->last_name,
+            $this->second_last_name,
+        ])
+            ->filter()
+            ->implode(' ');
+    }
+
+    public function scopeActive(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'active',
+            true
+        );
+    }
+
+    public function scopeDefaultOperator(
+        Builder $query
+    ): Builder {
+        return $query->where(
+            'is_default_operator',
+            true
+        );
+    }
+}
+
+================ APP SERVICE PROVIDER ================
+<?php
+
+namespace App\Providers;
+
+use App\Http\Controllers\BusinessDocumentController;
+use App\Http\Controllers\DocumentShareController;
+use App\Http\Controllers\ReportsController;
+use App\Models\CctvProject;
+use App\Models\Installation;
+use App\Models\InventoryItem;
+use App\Models\Quotation;
+use App\Models\SalePayment;
+use App\Models\WorkOrderItem;
+use App\Observers\InstallationObserver;
+use App\Observers\InventoryItemObserver;
+use App\Observers\QuotationDocumentObserver;
+use App\Observers\QuotationObserver;
+use App\Observers\SalePaymentDocumentObserver;
+use App\Observers\WorkOrderItemObserver;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        //
+    }
+
+    public function boot(): void
+    {
+        /*
+        |--------------------------------------------------------------------------
+        | CCTV ROUTE MODEL BINDING
+        |--------------------------------------------------------------------------
+        */
+
+        Route::model(
+            'cctvJob',
+            CctvProject::class
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | OBSERVERS
+        |--------------------------------------------------------------------------
+        */
+
+        Quotation::observe(
+            QuotationObserver::class
+        );
+
+        Quotation::observe(
+            QuotationDocumentObserver::class
+        );
+
+        InventoryItem::observe(
+            InventoryItemObserver::class
+        );
+
+        WorkOrderItem::observe(
+            WorkOrderItemObserver::class
+        );
+
+        Installation::observe(
+            InstallationObserver::class
+        );
+
+        SalePayment::observe(
+            SalePaymentDocumentObserver::class
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | REPORTES
+        |--------------------------------------------------------------------------
+        */
+
+        Route::middleware([
+            'web',
+            'auth',
+            'verified',
+        ])
+            ->get(
+                '/reports',
+                [
+                    ReportsController::class,
+                    'index',
+                ]
+            )
+            ->name(
+                'reports.index'
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | PDF
+        |--------------------------------------------------------------------------
+        */
+
+        Route::middleware([
+            'web',
+            'auth',
+            'verified',
+        ])
+            ->get(
+                '/quotations/{quotation}/pdf',
+                [
+                    BusinessDocumentController::class,
+                    'quotation',
+                ]
+            )
+            ->name(
+                'quotations.pdf'
+            );
+
+        Route::middleware([
+            'web',
+            'auth',
+            'verified',
+        ])
+            ->get(
+                '/receipts/{payment}/pdf',
+                [
+                    BusinessDocumentController::class,
+                    'receipt',
+                ]
+            )
+            ->name(
+                'receipts.pdf'
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | COMPARTIR DOCUMENTOS
+        |--------------------------------------------------------------------------
+        |
+        | No utiliza Meta Cloud API ni proveedores externos.
+        |
+        */
+
+        Route::middleware([
+            'web',
+            'auth',
+            'verified',
+        ])
+            ->get(
+                '/quotations/{quotation}/share',
+                [
+                    DocumentShareController::class,
+                    'quotation',
+                ]
+            )
+            ->name(
+                'quotations.share'
+            );
+
+        Route::middleware([
+            'web',
+            'auth',
+            'verified',
+        ])
+            ->get(
+                '/receipts/{payment}/share',
+                [
+                    DocumentShareController::class,
+                    'receipt',
+                ]
+            )
+            ->name(
+                'receipts.share'
+            );
+    }
+}
+
+================ BOOTSTRAP APP ================
+<?php
+
+use App\Http\Middleware\HandleAppearance;
+use App\Http\Middleware\HandleInertiaRequests;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
+use Illuminate\Http\Request;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
+
+        $middleware->web(append: [
+            HandleAppearance::class,
+            HandleInertiaRequests::class,
+            AddLinkHeadersForPreloadedAssets::class,
+        ]);
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
+        );
+    })->create();
+
+
+================ WEB ROUTES ================
+<?php
+
+use App\Http\Controllers\AccountsReceivableController;
+use App\Http\Controllers\AuditController;
+use App\Http\Controllers\CashController;
+use App\Http\Controllers\CatalogItemController;
+use App\Http\Controllers\CctvController;
+use App\Http\Controllers\ClientController;
+use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\IncomeController;
+use App\Http\Controllers\InstallationController;
+use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\PublicWebsiteController;
+use App\Http\Controllers\QuotationController;
+use App\Http\Controllers\ReceiptController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\SaleController;
+use App\Http\Controllers\SystemSettingController;
+use App\Http\Controllers\TaskController;
+use App\Http\Controllers\UserManagementController;
+use App\Http\Controllers\WebsiteController;
+use App\Http\Controllers\WorkOrderController;
+use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| SITIO WEB PÃšBLICO
+|--------------------------------------------------------------------------
+|
+| Mientras no exista PublicWebsiteController se seguirÃ¡ mostrando la
+| pantalla Welcome de Laravel.
+|
+| Cuando construyamos el sitio web pÃºblico, estas rutas se activarÃ¡n
+| automÃ¡ticamente sin modificar nuevamente este archivo.
+|
+*/
+
+if (class_exists(PublicWebsiteController::class)) {
+    Route::get('/', [PublicWebsiteController::class, 'home'])
+        ->name('home');
+
+    Route::get('/servicios', [PublicWebsiteController::class, 'services'])
+        ->name('public.services');
+
+    Route::get('/portafolio', [PublicWebsiteController::class, 'portfolio'])
+        ->name('public.portfolio');
+
+    Route::get('/contacto', [PublicWebsiteController::class, 'contact'])
+        ->name('public.contact');
+} else {
+    Route::inertia('/', 'Welcome')
+        ->name('home');
+}
+
+/*
+|--------------------------------------------------------------------------
+| SISTEMA ADMINISTRATIVO
+|--------------------------------------------------------------------------
+*/
+
+Route::middleware(['auth', 'verified'])->group(function () {
+
+    /*
+    |--------------------------------------------------------------------------
+    | DASHBOARD
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(DashboardController::class)) {
+        Route::get(
+            'dashboard',
+            [DashboardController::class, 'index']
+        )->name('dashboard');
+    } else {
+        Route::inertia('dashboard', 'Dashboard')
+            ->name('dashboard');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | EMPLEADOS
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'employees',
+        [EmployeeController::class, 'index']
+    )->name('employees.index');
+
+    Route::get(
+        'employees/create',
+        [EmployeeController::class, 'create']
+    )->name('employees.create');
+
+    Route::post(
+        'employees',
+        [EmployeeController::class, 'store']
+    )->name('employees.store');
+
+    Route::get(
+        'employees/{employee}/edit',
+        [EmployeeController::class, 'edit']
+    )->name('employees.edit');
+
+    Route::patch(
+        'employees/{employee}',
+        [EmployeeController::class, 'update']
+    )->name('employees.update');
+
+    /*
+    |--------------------------------------------------------------------------
+    | CLIENTES
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'clients',
+        [ClientController::class, 'index']
+    )->name('clients.index');
+
+    Route::get(
+        'clients/create',
+        [ClientController::class, 'create']
+    )->name('clients.create');
+
+    Route::post(
+        'clients',
+        [ClientController::class, 'store']
+    )->name('clients.store');
+
+    Route::get(
+        'clients/{client}/edit',
+        [ClientController::class, 'edit']
+    )->name('clients.edit');
+
+    Route::patch(
+        'clients/{client}',
+        [ClientController::class, 'update']
+    )->name('clients.update');
+
+    /*
+    |--------------------------------------------------------------------------
+    | CATÃLOGO
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'catalog',
+        [CatalogItemController::class, 'index']
+    )->name('catalog.index');
+
+    Route::get(
+        'catalog/create',
+        [CatalogItemController::class, 'create']
+    )->name('catalog.create');
+
+    Route::post(
+        'catalog',
+        [CatalogItemController::class, 'store']
+    )->name('catalog.store');
+
+    Route::get(
+        'catalog/{catalogItem}/edit',
+        [CatalogItemController::class, 'edit']
+    )->name('catalog.edit');
+
+    Route::patch(
+        'catalog/{catalogItem}',
+        [CatalogItemController::class, 'update']
+    )->name('catalog.update');
+
+    /*
+    |--------------------------------------------------------------------------
+    | INVENTARIO
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(InventoryController::class)) {
+        Route::get(
+            'inventory',
+            [InventoryController::class, 'index']
+        )->name('inventory.index');
+
+        Route::get(
+            'inventory/movements',
+            [InventoryController::class, 'movements']
+        )->name('inventory.movements');
+
+        Route::get(
+            'inventory/create',
+            [InventoryController::class, 'create']
+        )->name('inventory.create');
+
+        Route::post(
+            'inventory',
+            [InventoryController::class, 'store']
+        )->name('inventory.store');
+
+        Route::post(
+            'inventory/adjustments',
+            [InventoryController::class, 'storeAdjustment']
+        )->name('inventory.adjustments.store');
+
+        Route::get(
+            'inventory/{inventoryItem}',
+            [InventoryController::class, 'show']
+        )->name('inventory.show');
+
+        Route::get(
+            'inventory/{inventoryItem}/edit',
+            [InventoryController::class, 'edit']
+        )->name('inventory.edit');
+
+        Route::patch(
+            'inventory/{inventoryItem}',
+            [InventoryController::class, 'update']
+        )->name('inventory.update');
+
+        Route::get(
+            'inventory/{inventoryItem}/movements',
+            [InventoryController::class, 'itemMovements']
+        )->name('inventory.item-movements');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | COTIZACIONES
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'quotations',
+        [QuotationController::class, 'index']
+    )->name('quotations.index');
+
+    Route::get(
+        'quotations/create',
+        [QuotationController::class, 'create']
+    )->name('quotations.create');
+
+    Route::post(
+        'quotations',
+        [QuotationController::class, 'store']
+    )->name('quotations.store');
+
+    Route::get(
+        'quotations/{quotation}',
+        [QuotationController::class, 'show']
+    )->name('quotations.show');
+
+    Route::get(
+        'quotations/{quotation}/edit',
+        [QuotationController::class, 'edit']
+    )->name('quotations.edit');
+
+    Route::patch(
+        'quotations/{quotation}',
+        [QuotationController::class, 'update']
+    )->name('quotations.update');
+
+    Route::patch(
+        'quotations/{quotation}/status',
+        [QuotationController::class, 'updateStatus']
+    )->name('quotations.status');
+
+    Route::post(
+        'quotations/{quotation}/convert-to-sale',
+        [SaleController::class, 'convertFromQuotation']
+    )->name('quotations.convert-to-sale');
+
+    /*
+    |--------------------------------------------------------------------------
+    | VENTAS
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        'sales',
+        [SaleController::class, 'index']
+    )->name('sales.index');
+
+    Route::get(
+        'sales/create',
+        [SaleController::class, 'create']
+    )->name('sales.create');
+
+    Route::post(
+        'sales',
+        [SaleController::class, 'store']
+    )->name('sales.store');
+
+    Route::get(
+        'sales/{sale}',
+        [SaleController::class, 'show']
+    )->name('sales.show');
+
+    Route::post(
+        'sales/{sale}/payments',
+        [SaleController::class, 'addPayment']
+    )->name('sales.payments.store');
+
+    Route::patch(
+        'sales/{sale}/cancel',
+        [SaleController::class, 'cancel']
+    )->name('sales.cancel');
+
+    /*
+    |--------------------------------------------------------------------------
+    | RECIBOS
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(ReceiptController::class)) {
+        Route::get(
+            'receipts',
+            [ReceiptController::class, 'index']
+        )->name('receipts.index');
+
+        Route::get(
+            'receipts/{salePayment}',
+            [ReceiptController::class, 'show']
+        )->name('receipts.show');
+
+        Route::get(
+            'receipts/{salePayment}/print',
+            [ReceiptController::class, 'print']
+        )->name('receipts.print');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CUENTAS POR COBRAR
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(AccountsReceivableController::class)) {
+        Route::get(
+            'accounts-receivable',
+            [AccountsReceivableController::class, 'index']
+        )->name('accounts-receivable.index');
+
+        Route::get(
+            'accounts-receivable/{sale}',
+            [AccountsReceivableController::class, 'show']
+        )->name('accounts-receivable.show');
+
+        Route::post(
+            'accounts-receivable/{sale}/payments',
+            [AccountsReceivableController::class, 'storePayment']
+        )->name('accounts-receivable.payments.store');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Ã“RDENES DE TRABAJO
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(WorkOrderController::class)) {
+        Route::get(
+            'work-orders',
+            [WorkOrderController::class, 'index']
+        )->name('work-orders.index');
+
+        Route::get(
+            'work-orders/create',
+            [WorkOrderController::class, 'create']
+        )->name('work-orders.create');
+
+        Route::post(
+            'work-orders',
+            [WorkOrderController::class, 'store']
+        )->name('work-orders.store');
+
+        Route::get(
+            'work-orders/{workOrder}',
+            [WorkOrderController::class, 'show']
+        )->name('work-orders.show');
+
+        Route::get(
+            'work-orders/{workOrder}/edit',
+            [WorkOrderController::class, 'edit']
+        )->name('work-orders.edit');
+
+        Route::patch(
+            'work-orders/{workOrder}',
+            [WorkOrderController::class, 'update']
+        )->name('work-orders.update');
+
+        Route::patch(
+            'work-orders/{workOrder}/status',
+            [WorkOrderController::class, 'updateStatus']
+        )->name('work-orders.status');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | TAREAS
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(TaskController::class)) {
+        Route::get(
+            'tasks',
+            [TaskController::class, 'index']
+        )->name('tasks.index');
+
+        Route::get(
+            'tasks/create',
+            [TaskController::class, 'create']
+        )->name('tasks.create');
+
+        Route::post(
+            'tasks',
+            [TaskController::class, 'store']
+        )->name('tasks.store');
+
+        Route::get(
+            'tasks/{task}',
+            [TaskController::class, 'show']
+        )->name('tasks.show');
+
+        Route::get(
+            'tasks/{task}/edit',
+            [TaskController::class, 'edit']
+        )->name('tasks.edit');
+
+        Route::patch(
+            'tasks/{task}',
+            [TaskController::class, 'update']
+        )->name('tasks.update');
+
+        Route::patch(
+            'tasks/{task}/start',
+            [TaskController::class, 'start']
+        )->name('tasks.start');
+
+        Route::patch(
+            'tasks/{task}/pause',
+            [TaskController::class, 'pause']
+        )->name('tasks.pause');
+
+        Route::patch(
+            'tasks/{task}/resume',
+            [TaskController::class, 'resume']
+        )->name('tasks.resume');
+
+        Route::patch(
+            'tasks/{task}/finish',
+            [TaskController::class, 'finish']
+        )->name('tasks.finish');
+
+        Route::patch(
+            'tasks/{task}/send-for-review',
+            [TaskController::class, 'sendForReview']
+        )->name('tasks.send-for-review');
+
+        Route::patch(
+            'tasks/{task}/report-issue',
+            [TaskController::class, 'reportIssue']
+        )->name('tasks.report-issue');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | INSTALACIONES
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(InstallationController::class)) {
+        Route::get(
+            'installations',
+            [InstallationController::class, 'index']
+        )->name('installations.index');
+
+        Route::get(
+            'installations/create',
+            [InstallationController::class, 'create']
+        )->name('installations.create');
+
+        Route::post(
+            'installations',
+            [InstallationController::class, 'store']
+        )->name('installations.store');
+
+        Route::get(
+            'installations/{installation}',
+            [InstallationController::class, 'show']
+        )->name('installations.show');
+
+        Route::get(
+            'installations/{installation}/edit',
+            [InstallationController::class, 'edit']
+        )->name('installations.edit');
+
+        Route::patch(
+            'installations/{installation}',
+            [InstallationController::class, 'update']
+        )->name('installations.update');
+
+        Route::patch(
+            'installations/{installation}/status',
+            [InstallationController::class, 'updateStatus']
+        )->name('installations.status');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CCTV / CÃMARAS DE SEGURIDAD
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(CctvController::class)) {
+        Route::get(
+            'cctv',
+            [CctvController::class, 'index']
+        )->name('cctv.index');
+
+        Route::get(
+            'cctv/create',
+            [CctvController::class, 'create']
+        )->name('cctv.create');
+
+        Route::post(
+            'cctv',
+            [CctvController::class, 'store']
+        )->name('cctv.store');
+
+        Route::get(
+            'cctv/{cctvJob}',
+            [CctvController::class, 'show']
+        )->name('cctv.show');
+
+        Route::get(
+            'cctv/{cctvJob}/edit',
+            [CctvController::class, 'edit']
+        )->name('cctv.edit');
+
+        Route::patch(
+            'cctv/{cctvJob}',
+            [CctvController::class, 'update']
+        )->name('cctv.update');
+
+        Route::patch(
+            'cctv/{cctvJob}/status',
+            [CctvController::class, 'updateStatus']
+        )->name('cctv.status');
+
+        Route::post(
+            'cctv/{cctvJob}/visits',
+            [CctvController::class, 'storeVisit']
+        )->name('cctv.visits.store');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CAJA
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(CashController::class)) {
+        Route::get(
+            'cash',
+            [CashController::class, 'index']
+        )->name('cash.index');
+
+        Route::get(
+            'cash/history',
+            [CashController::class, 'history']
+        )->name('cash.history');
+
+        Route::post(
+            'cash/open',
+            [CashController::class, 'open']
+        )->name('cash.open');
+
+        Route::post(
+            'cash/close',
+            [CashController::class, 'close']
+        )->name('cash.close');
+
+        Route::post(
+            'cash/movements',
+            [CashController::class, 'storeMovement']
+        )->name('cash.movements.store');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | OTROS INGRESOS
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(IncomeController::class)) {
+        Route::get(
+            'income',
+            [IncomeController::class, 'index']
+        )->name('income.index');
+
+        Route::get(
+            'income/create',
+            [IncomeController::class, 'create']
+        )->name('income.create');
+
+        Route::post(
+            'income',
+            [IncomeController::class, 'store']
+        )->name('income.store');
+
+        Route::get(
+            'income/{income}/edit',
+            [IncomeController::class, 'edit']
+        )->name('income.edit');
+
+        Route::patch(
+            'income/{income}',
+            [IncomeController::class, 'update']
+        )->name('income.update');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GASTOS
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(ExpenseController::class)) {
+        Route::get(
+            'expenses',
+            [ExpenseController::class, 'index']
+        )->name('expenses.index');
+
+        Route::get(
+            'expenses/create',
+            [ExpenseController::class, 'create']
+        )->name('expenses.create');
+
+        Route::post(
+            'expenses',
+            [ExpenseController::class, 'store']
+        )->name('expenses.store');
+
+        Route::get(
+            'expenses/{expense}/edit',
+            [ExpenseController::class, 'edit']
+        )->name('expenses.edit');
+
+        Route::patch(
+            'expenses/{expense}',
+            [ExpenseController::class, 'update']
+        )->name('expenses.update');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | REPORTES
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(ReportController::class)) {
+        Route::get(
+            'reports',
+            [ReportController::class, 'index']
+        )->name('reports.index');
+
+        Route::get(
+            'reports/sales',
+            [ReportController::class, 'sales']
+        )->name('reports.sales');
+
+        Route::get(
+            'reports/cash-flow',
+            [ReportController::class, 'cashFlow']
+        )->name('reports.cash-flow');
+
+        Route::get(
+            'reports/profitability',
+            [ReportController::class, 'profitability']
+        )->name('reports.profitability');
+
+        Route::get(
+            'reports/accounts-receivable',
+            [ReportController::class, 'accountsReceivable']
+        )->name('reports.accounts-receivable');
+
+        Route::get(
+            'reports/production',
+            [ReportController::class, 'production']
+        )->name('reports.production');
+
+        Route::get(
+            'reports/inventory',
+            [ReportController::class, 'inventory']
+        )->name('reports.inventory');
+
+        Route::get(
+            'reports/{report}/export',
+            [ReportController::class, 'export']
+        )->name('reports.export');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ADMINISTRACIÃ“N DEL SITIO WEB
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(WebsiteController::class)) {
+        Route::get(
+            'website',
+            [WebsiteController::class, 'index']
+        )->name('website.index');
+
+        Route::patch(
+            'website/settings',
+            [WebsiteController::class, 'updateSettings']
+        )->name('website.settings.update');
+
+        Route::post(
+            'website/content',
+            [WebsiteController::class, 'storeContent']
+        )->name('website.content.store');
+
+        Route::patch(
+            'website/content/{content}',
+            [WebsiteController::class, 'updateContent']
+        )->name('website.content.update');
+
+        Route::delete(
+            'website/content/{content}',
+            [WebsiteController::class, 'destroyContent']
+        )->name('website.content.destroy');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USUARIOS, ROLES Y PERMISOS
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(UserManagementController::class)) {
+        Route::get(
+            'users',
+            [UserManagementController::class, 'index']
+        )->name('users.index');
+
+        Route::get(
+            'users/create',
+            [UserManagementController::class, 'create']
+        )->name('users.create');
+
+        Route::post(
+            'users',
+            [UserManagementController::class, 'store']
+        )->name('users.store');
+
+        Route::get(
+            'users/permissions',
+            [UserManagementController::class, 'permissions']
+        )->name('users.permissions');
+
+        Route::post(
+            'users/roles',
+            [UserManagementController::class, 'storeRole']
+        )->name('users.roles.store');
+
+        Route::patch(
+            'users/roles/{role}',
+            [UserManagementController::class, 'updateRole']
+        )->name('users.roles.update');
+
+        Route::delete(
+            'users/roles/{role}',
+            [UserManagementController::class, 'destroyRole']
+        )->name('users.roles.destroy');
+
+        Route::get(
+            'users/{user}/edit',
+            [UserManagementController::class, 'edit']
+        )->name('users.edit');
+
+        Route::patch(
+            'users/{user}',
+            [UserManagementController::class, 'update']
+        )->name('users.update');
+
+        Route::patch(
+            'users/{user}/status',
+            [UserManagementController::class, 'updateStatus']
+        )->name('users.status');
+
+        Route::post(
+            'users/{user}/reset-password',
+            [UserManagementController::class, 'resetPassword']
+        )->name('users.reset-password');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | AUDITORÃA
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(AuditController::class)) {
+        Route::get(
+            'audit',
+            [AuditController::class, 'index']
+        )->name('audit.index');
+
+        Route::get(
+            'audit/{auditLog}',
+            [AuditController::class, 'show']
+        )->name('audit.show');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CONFIGURACIÃ“N GENERAL DEL SISTEMA
+    |--------------------------------------------------------------------------
+    */
+
+    if (class_exists(SystemSettingController::class)) {
+        Route::get(
+            'settings/system',
+            [SystemSettingController::class, 'index']
+        )->name('system-settings.index');
+
+        Route::patch(
+            'settings/system',
+            [SystemSettingController::class, 'update']
+        )->name('system-settings.update');
+    }
+});
+
+/*
+|--------------------------------------------------------------------------
+| CONFIGURACIÃ“N PERSONAL DEL USUARIO
+|--------------------------------------------------------------------------
+|
+| Rutas originales del starter de Laravel:
+| perfil, contraseÃ±a, apariencia, etc.
+|
+*/
+
+require __DIR__.'/settings.php';
+
+================ USER MIGRATIONS ================
+
+----- F:\Archivos\2024\Documentos\Ghost PERSONAL\ADN\adn-publicidad\database\migrations\0001_01_01_000000_create_users_table.php -----
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->timestamp('email_verified_at')->nullable();
+            $table->string('password');
+            $table->rememberToken();
+            $table->timestamps();
+        });
+
+        Schema::create('password_reset_tokens', function (Blueprint $table) {
+            $table->string('email')->primary();
+            $table->string('token');
+            $table->timestamp('created_at')->nullable();
+        });
+
+        Schema::create('sessions', function (Blueprint $table) {
+            $table->string('id')->primary();
+            $table->foreignId('user_id')->nullable()->index();
+            $table->string('ip_address', 45)->nullable();
+            $table->text('user_agent')->nullable();
+            $table->longText('payload');
+            $table->integer('last_activity')->index();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('users');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('sessions');
+    }
+};
+
+
+----- F:\Archivos\2024\Documentos\Ghost PERSONAL\ADN\adn-publicidad\database\migrations\2025_08_14_170933_add_two_factor_columns_to_users_table.php -----
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->text('two_factor_secret')->after('password')->nullable();
+            $table->text('two_factor_recovery_codes')->after('two_factor_secret')->nullable();
+            $table->timestamp('two_factor_confirmed_at')->after('two_factor_recovery_codes')->nullable();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn([
+                'two_factor_secret',
+                'two_factor_recovery_codes',
+                'two_factor_confirmed_at',
+            ]);
+        });
+    }
+};
+
+
+----- F:\Archivos\2024\Documentos\Ghost PERSONAL\ADN\adn-publicidad\database\migrations\2026_08_18_051925_create_employees_table.php -----
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('employees', function (Blueprint $table) {
+            $table->id();
+
+            $table->string('employee_code', 20)->unique();
+
+            $table->string('first_name', 100);
+            $table->string('middle_name', 100)->nullable();
+
+            $table->string('last_name', 100);
+            $table->string('second_last_name', 100)->nullable();
+
+            $table->string('identity_number', 30)
+                ->nullable()
+                ->unique();
+
+            $table->string('gender', 20)->nullable();
+
+            $table->date('birth_date')->nullable();
+
+            $table->string('email', 150)
+                ->nullable()
+                ->unique();
+
+            $table->string('phone', 30);
+
+            $table->string('alternate_phone', 30)->nullable();
+
+            $table->text('address')->nullable();
+
+            $table->string('position', 100)->nullable();
+
+            $table->date('hire_date')->nullable();
+
+            $table->text('notes')->nullable();
+
+            $table->boolean('active')->default(true);
+
+            $table->timestamps();
+            $table->softDeletes();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('employees');
+    }
+};
+
+----- F:\Archivos\2024\Documentos\Ghost PERSONAL\ADN\adn-publicidad\database\migrations\2026_08_18_190739_add_default_operator_to_employees_table.php -----
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('employees', function (Blueprint $table) {
+            $table->boolean('is_default_operator')
+                ->default(false)
+                ->after('active');
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | Modo operador Ãºnico
+        |--------------------------------------------------------------------------
+        |
+        | Si solamente existe un empleado activo, lo dejamos automÃ¡ticamente
+        | configurado como operador principal del sistema.
+        |
+        */
+
+        $activeEmployees = DB::table('employees')
+            ->where('active', true)
+            ->whereNull('deleted_at')
+            ->pluck('id');
+
+        if ($activeEmployees->count() === 1) {
+            DB::table('employees')
+                ->where('id', $activeEmployees->first())
+                ->update([
+                    'is_default_operator' => true,
+                ]);
+        }
+    }
+
+    public function down(): void
+    {
+        Schema::table('employees', function (Blueprint $table) {
+            $table->dropColumn('is_default_operator');
+        });
+    }
+};
+
+================ EXISTING USER CONTROLLERS ================
+
+================ EXISTING USER PAGES ================
+NO EXISTE CARPETA Users
+
+================ AUTH / USER ROUTES ================
+
+  GET|HEAD  .well-known/passkey-endpoints ......................................................................................... well-known.passkeys ÔÇ¦ 
+routes/settings.php:29
+  GET|HEAD  employees ............................................................................................................... employees.index ÔÇ¦ 
+EmployeeController@index
+  POST      employees ............................................................................................................... employees.store ÔÇ¦ 
+EmployeeController@store
+  GET|HEAD  employees/create ...................................................................................................... employees.create ÔÇ¦ 
+EmployeeController@create
+  PATCH     employees/{employee} .................................................................................................. employees.update ÔÇ¦ 
+EmployeeController@update
+  GET|HEAD  employees/{employee}/edit ................................................................................................. employees.edit ÔÇ¦ 
+EmployeeController@edit
+  GET|HEAD  register .............................................................................................. register ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+RegisteredUserController@create
+  POST      register ......................................................................................... register.store ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+RegisteredUserController@store
+  ANY       settings ................................................................................................................... Illuminate\Routing ÔÇ¦ 
+RedirectController
+  GET|HEAD  settings/appearance .............................................................................................. appearance.edit ÔÇ¦ Inertia\Controller ÔÇ¦ 
+Controller
+  PUT       settings/password ........................................................................................ user-password.update ÔÇ¦ 
+Settings\SecurityController@update
+  GET|HEAD  settings/profile .................................................................................................... profile.edit ÔÇ¦ 
+Settings\ProfileController@edit
+  PATCH     settings/profile ................................................................................................ profile.update ÔÇ¦ 
+Settings\ProfileController@update
+  DELETE    settings/profile .............................................................................................. profile.destroy ÔÇ¦ 
+Settings\ProfileController@destroy
+  GET|HEAD  settings/security ................................................................................................. security.edit ÔÇ¦ 
+Settings\SecurityController@edit
+  GET|HEAD  user/confirm-password ...................................................................... password.confirm ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+ConfirmablePasswordController@show
+  POST      user/confirm-password ............................................................... password.confirm.store ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+ConfirmablePasswordController@store
+  GET|HEAD  user/confirmed-password-status .................................................... password.confirmation ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+ConfirmedPasswordStatusController@show
+  POST      user/confirmed-two-factor-authentication ................................... two-factor.confirm ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+ConfirmedTwoFactorAuthenticationController@store
+  POST      user/passkeys ............................................................................... passkey.store ÔÇ¦ Laravel\Passkeys ÔÇ¦ 
+PasskeyRegistrationController@store
+  GET|HEAD  user/passkeys/options ........................................................ passkey.registration-options ÔÇ¦ Laravel\Passkeys ÔÇ¦ 
+PasskeyRegistrationController@index
+  DELETE    user/passkeys/{passkey} ................................................................. passkey.destroy ÔÇ¦ Laravel\Passkeys ÔÇ¦ 
+PasskeyRegistrationController@destroy
+  POST      user/two-factor-authentication ....................................................... two-factor.enable ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+TwoFactorAuthenticationController@store
+  DELETE    user/two-factor-authentication .................................................... two-factor.disable ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+TwoFactorAuthenticationController@destroy
+  GET|HEAD  user/two-factor-qr-code ...................................................................... two-factor.qr-code ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+TwoFactorQrCodeController@show
+  GET|HEAD  user/two-factor-recovery-codes .......................................................... two-factor.recovery-codes ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+RecoveryCodeController@index
+  POST      user/two-factor-recovery-codes ............................................... two-factor.regenerate-recovery-codes ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+RecoveryCodeController@store
+  GET|HEAD  user/two-factor-secret-key ............................................................. two-factor.secret-key ÔÇ¦ Laravel\Fortify ÔÇ¦ 
+TwoFactorSecretKeyController@show
+
+
+
+
+================ USERS TABLE STRUCTURE ================
+array:11 [
+  0 => "id"
+  1 => "name"
+  2 => "email"
+  3 => "email_verified_at"
+  4 => "password"
+  5 => "two_factor_secret"
+  6 => "two_factor_recovery_codes"
+  7 => "two_factor_confirmed_at"
+  8 => "remember_token"
+  9 => "created_at"
+  10 => "updated_at"
+] // vendor\psy\psysh\src\ExecutionClosure.php(41) : eval()'d code:1
+
+
+================ EMPLOYEES TABLE STRUCTURE ================
+array:21 [
+  0 => "id"
+  1 => "employee_code"
+  2 => "first_name"
+  3 => "middle_name"
+  4 => "last_name"
+  5 => "second_last_name"
+  6 => "identity_number"
+  7 => "gender"
+  8 => "birth_date"
+  9 => "email"
+  10 => "phone"
+  11 => "alternate_phone"
+  12 => "address"
+  13 => "position"
+  14 => "hire_date"
+  15 => "notes"
+  16 => "active"
+  17 => "is_default_operator"
+  18 => "created_at"
+  19 => "updated_at"
+  20 => "deleted_at"
+] // vendor\psy\psysh\src\ExecutionClosure.php(41) : eval()'d code:1
+
